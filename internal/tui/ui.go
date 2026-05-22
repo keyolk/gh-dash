@@ -222,6 +222,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd = m.executeKeybinding(msg.String())
 			return m, cmd
 
+		// In the PRs view with the preview sidebar open, route sidebar-tab
+		// keys to the PR view before the generic prev/next-section handlers
+		// can claim them. This lets users rebind `prevSidebarTab` /
+		// `nextSidebarTab` to left/right (or any key shared with section
+		// nav) without losing tab switching while a PR preview is open.
+		case m.ctx.View == config.PRsView && m.sidebar.IsOpen &&
+			(key.Matches(msg, keys.PRKeys.PrevSidebarTab) ||
+				key.Matches(msg, keys.PRKeys.NextSidebarTab)):
+			var scmds []tea.Cmd
+			var scmd tea.Cmd
+			m.prView, scmd = m.prView.Update(msg)
+			scmds = append(scmds, scmd)
+			m.syncSidebar()
+			return m, tea.Batch(scmds...)
+
 		case key.Matches(msg, m.keys.PrevSection):
 			prevSection := m.getSectionAt(m.getPrevSectionId())
 			if prevSection != nil {
