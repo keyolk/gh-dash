@@ -258,10 +258,13 @@ func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, co
 			line = appendMarker(line, d.width, commentMarker)
 		}
 
-		// Hard-cap the composed row to the viewport width so the embedded
-		// viewport never tries to soft-wrap (which would push the diff out
-		// of alignment and ruin column tracking).
-		line = capDisplay(line, d.width)
+		// Hard-cap the composed row to width-1 cells. The 1-cell margin
+		// absorbs any drift between our lipgloss.Width measurements (which
+		// the embedded viewport uses to decide whether to wrap) and what
+		// the terminal actually renders — long lines with mixed-width
+		// glyphs or ellipsis can otherwise tip a row one cell over and
+		// trigger wrap.
+		line = capDisplay(line, d.width-1)
 
 		b.WriteString(line)
 		b.WriteString("\n")

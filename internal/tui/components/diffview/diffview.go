@@ -192,7 +192,12 @@ func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 	m.ctx = ctx
 	w, h := m.size()
 	m.viewport.SetWidth(w)
-	m.viewport.SetHeight(h)
+	// reserve 1 row for header + 1 for footer
+	bodyH := h - 2
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	m.viewport.SetHeight(bodyH)
 	m.rebuild()
 }
 
@@ -440,31 +445,42 @@ func (m *Model) ensureCursorVisible() {
 	}
 }
 
-// View renders the diff overlay.
+// View renders the diff overlay. We render the full screen ourselves
+// (header + viewport body + footer) without a lipgloss border so that the
+// width we feed to buildDoc exactly matches the cells the terminal will
+// allocate. That removes the +/-2 cell drift that border + style.Width
+// added and was causing long rows to wrap.
 func (m Model) View() string {
 	if !m.IsOpen {
 		return ""
 	}
 	width, height := m.size()
-	style := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		Border(lipgloss.RoundedBorder())
 
 	header := m.headerView(width)
-	body := m.viewport.View()
-	if m.Loading {
-		body = lipgloss.PlaceVertical(height-2, lipgloss.Center,
-			lipgloss.PlaceHorizontal(width, lipgloss.Center, "loading diff…"))
+	footer := m.footerView(width)
+
+	bodyHeight := height - 2 // 1 line header + 1 line footer
+	if bodyHeight < 1 {
+		bodyHeight = 1
 	}
-	if m.err != nil {
-		body = lipgloss.PlaceVertical(height-2, lipgloss.Center,
+
+	var body string
+	if m.Loading {
+		body = lipgloss.PlaceVertical(bodyHeight, lipgloss.Center,
+			lipgloss.PlaceHorizontal(width, lipgloss.Center, "loading diff…"))
+	} else if m.err != nil {
+		body = lipgloss.PlaceVertical(bodyHeight, lipgloss.Center,
 			lipgloss.PlaceHorizontal(width, lipgloss.Center,
 				lipgloss.NewStyle().Foreground(lipgloss.Color("9")).
 					Render(fmt.Sprintf("error: %v", m.err))))
+	} else {
+		body = m.viewport.View()
 	}
-	footer := m.footerView(width)
-	return style.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
+
+	// Solid black backdrop so we don't see the underlying main UI bleed
+	// through any short rows.
+	backdrop := lipgloss.NewStyle().Background(lipgloss.Color("0"))
+	return backdrop.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
 }
 
 // HelpView returns the help overlay (or "" when hidden). Composed by the
@@ -563,8 +579,9 @@ func (m Model) size() (int, int) {
 	if h <= 0 {
 		h = m.ctx.MainContentHeight
 	}
-	// Reserve space for our own border + header + footer (2 + 1 + 1).
-	return max(20, w-2), max(5, h-4)
+	// Use the whole screen — no extra reservation. The view composes header +
+	// body + footer to fill `h` rows; rows already fit `w` cells exactly.
+	return max(20, w), max(5, h)
 }
 
 func (m Model) headerView(width int) string {
@@ -587,7 +604,7 @@ func (m Model) headerView(width int) string {
 		gap = 1
 	}
 	style := lipgloss.NewStyle().Bold(true)
-	return style.Render(left + strings.Repeat(" ", gap) + right)
+	return capDisplay(style.Render(left+strings.Repeat(" ", gap)+right), width-1)
 }
 
 func (m Model) footerView(width int) string {
@@ -595,7 +612,7 @@ func (m Model) footerView(width int) string {
 	if lipgloss.Width(hints) > width {
 		hints = " c: comment · R: submit · ?: help · q: close "
 	}
-	return lipgloss.NewStyle().Faint(true).Render(hints)
+	return capDisplay(lipgloss.NewStyle().Faint(true).Render(hints), width-1)
 }
 
 func (m *Model) rebuild() {
