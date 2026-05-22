@@ -2,6 +2,7 @@ package keys
 
 import (
 	"fmt"
+	"strings"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
@@ -294,6 +295,7 @@ func rebindUniversal(universal []config.Keybinding) error {
 	log.Debug("Rebinding universal keys", "keys", universal)
 
 	CustomUniversalBindings = []key.Binding{}
+	touched := make(map[string]bool)
 
 	for _, kb := range universal {
 		if kb.Builtin == "" {
@@ -316,79 +318,92 @@ func rebindUniversal(universal []config.Keybinding) error {
 
 		log.Debug("Rebinding universal key", "builtin", kb.Builtin, "key", kb.Key)
 
-		var key *key.Binding
+		var binding *key.Binding
 
 		switch kb.Builtin {
 		case "up":
-			key = &Keys.Up
+			binding = &Keys.Up
 		case "down":
-			key = &Keys.Down
+			binding = &Keys.Down
 		case "firstLine":
-			key = &Keys.FirstLine
+			binding = &Keys.FirstLine
 		case "lastLine":
-			key = &Keys.LastLine
+			binding = &Keys.LastLine
 		case "togglePreview":
-			key = &Keys.TogglePreview
+			binding = &Keys.TogglePreview
 		case "togglePreviewPosition":
-			key = &Keys.TogglePreviewPosition
+			binding = &Keys.TogglePreviewPosition
 		case "openGithub":
-			key = &Keys.OpenGithub
+			binding = &Keys.OpenGithub
 		case "refresh":
-			key = &Keys.Refresh
+			binding = &Keys.Refresh
 		case "refreshAll":
-			key = &Keys.RefreshAll
+			binding = &Keys.RefreshAll
 		case "redraw":
-			key = &Keys.Redraw
+			binding = &Keys.Redraw
 		case "pageDown":
-			key = &Keys.PageDown
+			binding = &Keys.PageDown
 		case "pageUp":
-			key = &Keys.PageUp
+			binding = &Keys.PageUp
 		case "nextSection":
-			key = &Keys.NextSection
+			binding = &Keys.NextSection
 		case "prevSection":
-			key = &Keys.PrevSection
+			binding = &Keys.PrevSection
 		case "gotoSection1":
-			key = &Keys.GotoSection1
+			binding = &Keys.GotoSection1
 		case "gotoSection2":
-			key = &Keys.GotoSection2
+			binding = &Keys.GotoSection2
 		case "gotoSection3":
-			key = &Keys.GotoSection3
+			binding = &Keys.GotoSection3
 		case "gotoSection4":
-			key = &Keys.GotoSection4
+			binding = &Keys.GotoSection4
 		case "gotoSection5":
-			key = &Keys.GotoSection5
+			binding = &Keys.GotoSection5
 		case "gotoSection6":
-			key = &Keys.GotoSection6
+			binding = &Keys.GotoSection6
 		case "gotoSection7":
-			key = &Keys.GotoSection7
+			binding = &Keys.GotoSection7
 		case "gotoSection8":
-			key = &Keys.GotoSection8
+			binding = &Keys.GotoSection8
 		case "gotoSection9":
-			key = &Keys.GotoSection9
+			binding = &Keys.GotoSection9
 		case "search":
-			key = &Keys.Search
+			binding = &Keys.Search
 		case "copyurl":
-			key = &Keys.CopyUrl
+			binding = &Keys.CopyUrl
 		case "copyNumber":
-			key = &Keys.CopyNumber
+			binding = &Keys.CopyNumber
 		case "help":
-			key = &Keys.Help
+			binding = &Keys.Help
 		case "quit":
-			key = &Keys.Quit
+			binding = &Keys.Quit
 		default:
 			return fmt.Errorf("unknown built-in universal key: '%s'", kb.Builtin)
 		}
 
-		key.SetKeys(kb.Key)
-
-		helpDesc := key.Help().Desc
-		if kb.Name != "" {
-			helpDesc = kb.Name
-		} else if kb.Command != "" {
-			helpDesc = kb.Command
-		}
-		key.SetHelp(kb.Key, helpDesc)
+		applyBuiltinKey(binding, kb, touched)
 	}
 
 	return nil
+}
+
+// applyBuiltinKey assigns the configured key to a builtin binding. The first
+// time a given builtin is touched in a single rebind pass we replace its
+// default keys; subsequent entries with the same builtin append their key so
+// users can map several keys to one action via multiple config entries.
+func applyBuiltinKey(binding *key.Binding, kb config.Keybinding, touched map[string]bool) {
+	keys := []string{kb.Key}
+	if touched[kb.Builtin] {
+		keys = append(binding.Keys(), kb.Key)
+	}
+	binding.SetKeys(keys...)
+	touched[kb.Builtin] = true
+
+	helpDesc := binding.Help().Desc
+	if kb.Name != "" {
+		helpDesc = kb.Name
+	} else if kb.Command != "" {
+		helpDesc = kb.Command
+	}
+	binding.SetHelp(strings.Join(binding.Keys(), "/"), helpDesc)
 }

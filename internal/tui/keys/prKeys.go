@@ -135,6 +135,7 @@ func PRFullHelp() []key.Binding {
 
 func rebindPRKeys(keys []config.Keybinding) error {
 	CustomPRBindings = []key.Binding{}
+	touched := make(map[string]bool)
 
 	for _, prKey := range keys {
 		if prKey.Builtin == "" {
@@ -157,56 +158,50 @@ func rebindPRKeys(keys []config.Keybinding) error {
 
 		log.Debug("Rebinding PR key", "builtin", prKey.Builtin, "key", prKey.Key)
 
-		var key *key.Binding
+		var binding *key.Binding
 
 		switch prKey.Builtin {
 		case "prevSidebarTab":
-			key = &PRKeys.PrevSidebarTab
+			binding = &PRKeys.PrevSidebarTab
 		case "nextSidebarTab":
-			key = &PRKeys.NextSidebarTab
+			binding = &PRKeys.NextSidebarTab
 		case "approve":
-			key = &PRKeys.Approve
+			binding = &PRKeys.Approve
 		case "assign":
-			key = &PRKeys.Assign
+			binding = &PRKeys.Assign
 		case "unassign":
-			key = &PRKeys.Unassign
+			binding = &PRKeys.Unassign
 		case "label":
-			key = &PRKeys.Label
+			binding = &PRKeys.Label
 		case "comment":
-			key = &PRKeys.Comment
+			binding = &PRKeys.Comment
 		case "diff":
-			key = &PRKeys.Diff
+			binding = &PRKeys.Diff
 		case "checkout":
-			key = &PRKeys.Checkout
+			binding = &PRKeys.Checkout
 		case "close":
-			key = &PRKeys.Close
+			binding = &PRKeys.Close
 		case "ready":
-			key = &PRKeys.Ready
+			binding = &PRKeys.Ready
 		case "reopen":
-			key = &PRKeys.Reopen
+			binding = &PRKeys.Reopen
 		case "merge":
-			key = &PRKeys.Merge
+			binding = &PRKeys.Merge
 		case "update":
-			key = &PRKeys.Update
+			binding = &PRKeys.Update
 		case "watchChecks":
-			key = &PRKeys.WatchChecks
+			binding = &PRKeys.WatchChecks
 		case "approveWorkflows":
-			key = &PRKeys.ApproveWorkflows
+			binding = &PRKeys.ApproveWorkflows
 		case "viewIssues":
-			key = &PRKeys.ViewIssues
+			binding = &PRKeys.ViewIssues
 		case "summaryViewMore":
-			key = &PRKeys.SummaryViewMore
+			binding = &PRKeys.SummaryViewMore
 		default:
 			return fmt.Errorf("unknown built-in pr key: '%s'", prKey.Builtin)
 		}
 
-		key.SetKeys(prKey.Key)
-
-		helpDesc := key.Help().Desc
-		if prKey.Name != "" {
-			helpDesc = prKey.Name
-		}
-		key.SetHelp(prKey.Key, helpDesc)
+		applyBuiltinKey(binding, prKey, touched)
 	}
 
 	return nil
