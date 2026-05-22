@@ -63,6 +63,7 @@ func (c *commentEditor) view(screenW, screenH int) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("13")).
+		Background(lipgloss.Color("0")).
 		Padding(0, 1)
 
 	header := lipgloss.NewStyle().Bold(true).Render(c.headerLabel())
@@ -74,8 +75,7 @@ func (c *commentEditor) view(screenW, screenH int) string {
 		c.textarea.View(),
 		hints,
 	)
-	rendered := box.Render(content)
-	return lipgloss.Place(screenW, screenH, lipgloss.Center, lipgloss.Center, rendered)
+	return box.Render(content)
 }
 
 func (c *commentEditor) headerLabel() string {

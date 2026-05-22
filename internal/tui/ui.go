@@ -1064,10 +1064,12 @@ func (m Model) View() tea.View {
 	if m.diffView.IsOpen {
 		layers = append(layers, lipgloss.NewLayer(m.diffView.View()).X(0).Y(0))
 		if hv := m.diffView.HelpView(); hv != "" {
-			layers = append(layers, lipgloss.NewLayer(hv).X(0).Y(0))
+			hx, hy := m.diffView.HelpPosition()
+			layers = append(layers, lipgloss.NewLayer(hv).X(hx).Y(hy))
 		}
 		if ed := m.diffView.EditorView(); ed != "" {
-			layers = append(layers, lipgloss.NewLayer(ed).X(0).Y(0))
+			ex, ey := m.diffView.EditorPosition()
+			layers = append(layers, lipgloss.NewLayer(ed).X(ex).Y(ey))
 		}
 	}
 

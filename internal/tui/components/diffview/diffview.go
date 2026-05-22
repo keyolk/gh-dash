@@ -472,10 +472,10 @@ func (m Model) HelpView() string {
 	if !m.helpVisible {
 		return ""
 	}
-	w, h := m.size()
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("12")).
+		Background(lipgloss.Color("0")).
 		Padding(0, 1)
 	title := lipgloss.NewStyle().Bold(true).Render("Diff viewer keys")
 	rows := [][2]string{
@@ -499,8 +499,23 @@ func (m Model) HelpView() string {
 	for _, r := range rows {
 		lines = append(lines, fmt.Sprintf("%s  %s", keyStyle.Render(padRight(r[0], 18)), r[1]))
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box.Render(body))
+	return box.Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+}
+
+// HelpPosition reports the top-left coordinates at which HelpView should be
+// composited. We centre it within the diff frame so the rest of the diff
+// stays visible.
+func (m Model) HelpPosition() (int, int) {
+	w, h := m.size()
+	bw, bh := m.helpDimensions()
+	x := max(0, (w-bw)/2)
+	y := max(0, (h-bh)/2)
+	return x, y
+}
+
+func (m Model) helpDimensions() (int, int) {
+	// width ≈ 18 (key col) + 2 (gap) + max desc width (~48) + 4 padding/border
+	return 72, 17
 }
 
 func padRight(s string, n int) string {
@@ -518,6 +533,16 @@ func (m Model) EditorView() string {
 	}
 	w, h := m.size()
 	return m.editor.view(w, h)
+}
+
+// EditorPosition reports the top-left coordinates at which EditorView should
+// be composited (centred within the diff frame).
+func (m Model) EditorPosition() (int, int) {
+	w, h := m.size()
+	bw, bh := 64, 10
+	x := max(0, (w-bw)/2)
+	y := max(0, (h-bh)/2)
+	return x, y
 }
 
 // MatchKey reports whether the given key string matches a binding by string

@@ -8,17 +8,25 @@ import (
 )
 
 var (
-	gutterStyle      = lipgloss.NewStyle().Faint(true)
-	addBgStyle       = lipgloss.NewStyle().Background(lipgloss.Color("22"))
-	delBgStyle       = lipgloss.NewStyle().Background(lipgloss.Color("52"))
-	addTextStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	delTextStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	fileHdrStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	hunkHdrStyle     = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("13"))
-	cursorBgStyle    = lipgloss.NewStyle().Background(lipgloss.Color("237"))
-	selectBgStyle    = lipgloss.NewStyle().Background(lipgloss.Color("24"))
-	dimSelectBgStyle = lipgloss.NewStyle().Background(lipgloss.Color("236"))
-	commentMarker    = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("💬")
+	// Backgrounds per line kind when not selected / cursored.
+	addBg = lipgloss.Color("22") // dark green
+	delBg = lipgloss.Color("52") // dark red
+
+	addFg = lipgloss.Color("10")
+	delFg = lipgloss.Color("9")
+
+	// Highlight backgrounds — picked to be unmistakable atop add/del bg.
+	cursorBg = lipgloss.Color("226") // bright yellow
+	cursorFg = lipgloss.Color("0")   // black
+	selectBg = lipgloss.Color("201") // bright magenta
+	selectFg = lipgloss.Color("15")  // white
+	dimBg    = lipgloss.Color("237") // dark grey for the inactive half
+	dimFg    = lipgloss.Color("245")
+
+	dividerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	fileHdrStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	hunkHdrStyle  = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("13"))
+	commentMarker = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("💬")
 )
 
 // rowKind classifies a rendered row so we know whether it's selectable.
@@ -30,28 +38,35 @@ const (
 	rowCode
 )
 
-// row is one displayable line in the rendered diff.
+// row is one displayable line. For code rows we store plain (ANSI-free)
+// text and the kind of each half so stringify can pick a final background
+// in one pass without fighting inner ANSI resets.
 type row struct {
-	kind   rowKind
-	left   string // left-half raw text (inline mode uses this only)
-	right  string // right-half raw text (side-by-side only)
-	ref    *CodeRef
-	leftRef  *CodeRef // for side-by-side: ref backing the left half
-	rightRef *CodeRef // for side-by-side: ref backing the right half
+	kind       rowKind
+	headerText string // pre-styled text for non-code rows
+
+	plainLeft  string
+	plainRight string
+	leftKind   LineKind
+	rightKind  LineKind
+	hasLeft    bool
+	hasRight   bool
+
+	ref      *CodeRef // primary ref (right side preferred, falls back to left)
+	leftRef  *CodeRef
+	rightRef *CodeRef
 }
 
-// renderedDoc is the result of building either inline or side-by-side rows.
+// renderedDoc is the result of buildDoc, ready for highlight-aware
+// stringification.
 type renderedDoc struct {
-	rows []row
-	mode Mode
-	// width / colWidth are kept so we can recompute highlights without
-	// re-laying-out the full diff.
+	rows     []row
+	mode     Mode
 	width    int
 	colWidth int
 }
 
-// buildDoc renders the diff into rows + per-row metadata. Highlights are
-// applied separately in stringify().
+// buildDoc lays out the diff into rows + per-half metadata.
 func buildDoc(files []File, width int, mode Mode) renderedDoc {
 	doc := renderedDoc{mode: mode, width: width}
 	if mode == ModeSideBySide {
@@ -63,13 +78,13 @@ func buildDoc(files []File, width int, mode Mode) renderedDoc {
 
 	for fi, f := range files {
 		doc.rows = append(doc.rows, row{
-			kind: rowFileHeader,
-			left: fileHdrStyle.Render(fmt.Sprintf("▸ %s", f.Path())),
+			kind:       rowFileHeader,
+			headerText: fileHdrStyle.Render(fmt.Sprintf("▸ %s", f.Path())),
 		})
 		for hi, h := range f.Hunks {
 			doc.rows = append(doc.rows, row{
 				kind: rowHunkHeader,
-				left: hunkHdrStyle.Render(fmt.Sprintf(
+				headerText: hunkHdrStyle.Render(fmt.Sprintf(
 					"  @@ -%d,%d +%d,%d @@ %s",
 					h.OldStart, h.OldLines, h.NewStart, h.NewLines, h.Header,
 				)),
@@ -79,42 +94,54 @@ func buildDoc(files []File, width int, mode Mode) renderedDoc {
 				for li, ln := range h.Lines {
 					ref := codeRef(f.Path(), fi, hi, li, ln)
 					doc.rows = append(doc.rows, row{
-						kind: rowCode,
-						left: renderInlineLine(ln, width),
-						ref:  ref,
+						kind:      rowCode,
+						plainLeft: plainInlineLine(ln, width),
+						leftKind:  ln.Kind,
+						hasLeft:   true,
+						ref:       ref,
 					})
 				}
-			} else {
-				pairs := pairSideBySideWithIndex(h.Lines)
-				for _, p := range pairs {
-					var lRef, rRef *CodeRef
-					var lTxt, rTxt string
-					if p.left != nil {
-						lRef = codeRef(f.Path(), fi, hi, p.leftIdx, *p.left)
-						lTxt = renderHalfRow(p.left, doc.colWidth, true)
-					} else {
-						lTxt = strings.Repeat(" ", doc.colWidth)
-					}
-					if p.right != nil {
-						rRef = codeRef(f.Path(), fi, hi, p.rightIdx, *p.right)
-						rTxt = renderHalfRow(p.right, doc.colWidth, false)
-					} else {
-						rTxt = strings.Repeat(" ", doc.colWidth)
-					}
-					// pick a primary ref: prefer the new-side, fall back to old.
-					primary := rRef
-					if primary == nil {
-						primary = lRef
-					}
-					doc.rows = append(doc.rows, row{
-						kind:     rowCode,
-						left:     lTxt,
-						right:    rTxt,
-						ref:      primary,
-						leftRef:  lRef,
-						rightRef: rRef,
-					})
+				continue
+			}
+
+			pairs := pairSideBySideWithIndex(h.Lines)
+			for _, p := range pairs {
+				var lRef, rRef *CodeRef
+				var lTxt, rTxt string
+				var lKind, rKind LineKind
+				hasL, hasR := false, false
+				if p.left != nil {
+					lRef = codeRef(f.Path(), fi, hi, p.leftIdx, *p.left)
+					lTxt = plainHalfRow(p.left, doc.colWidth, true)
+					lKind = p.left.Kind
+					hasL = true
+				} else {
+					lTxt = strings.Repeat(" ", doc.colWidth)
 				}
+				if p.right != nil {
+					rRef = codeRef(f.Path(), fi, hi, p.rightIdx, *p.right)
+					rTxt = plainHalfRow(p.right, doc.colWidth, false)
+					rKind = p.right.Kind
+					hasR = true
+				} else {
+					rTxt = strings.Repeat(" ", doc.colWidth)
+				}
+				primary := rRef
+				if primary == nil {
+					primary = lRef
+				}
+				doc.rows = append(doc.rows, row{
+					kind:       rowCode,
+					plainLeft:  lTxt,
+					plainRight: rTxt,
+					leftKind:   lKind,
+					rightKind:  rKind,
+					hasLeft:    hasL,
+					hasRight:   hasR,
+					ref:        primary,
+					leftRef:    lRef,
+					rightRef:   rRef,
+				})
 			}
 		}
 	}
@@ -128,20 +155,62 @@ func codeRef(path string, fi, hi, li int, ln Line) *CodeRef {
 	}
 }
 
+// highlightState captures the "extra" colouring on top of the per-kind bg.
+type highlightState int
+
+const (
+	hlNone highlightState = iota
+	hlSelectedDim
+	hlSelected
+	hlCursor
+)
+
+// halfStyle returns the lipgloss style to render a half-row. The state arg
+// wins over the per-kind colouring so a selected or cursored line is
+// visually unambiguous regardless of whether it's an add / del / context.
+func halfStyle(kind LineKind, hasContent bool, state highlightState) lipgloss.Style {
+	s := lipgloss.NewStyle()
+	if !hasContent {
+		// Padding placeholder — keep the dim background when selected so the
+		// covered range is still visible on the inactive side.
+		if state == hlSelectedDim {
+			return s.Background(dimBg)
+		}
+		return s
+	}
+	switch state {
+	case hlCursor:
+		return s.Background(cursorBg).Foreground(cursorFg).Bold(true)
+	case hlSelected:
+		return s.Background(selectBg).Foreground(selectFg).Bold(true)
+	case hlSelectedDim:
+		return s.Background(dimBg).Foreground(dimFg)
+	}
+	switch kind {
+	case LineAdd:
+		return s.Background(addBg).Foreground(addFg)
+	case LineDel:
+		return s.Background(delBg).Foreground(delFg)
+	}
+	return s
+}
+
 // stringify produces the final viewport content with cursor / selection
-// highlights applied. Highlight passes are cheap because we work on rendered
-// rows instead of re-laying-out the full diff.
+// highlights applied.
 func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, comments map[CodeRef]bool) string {
 	var b strings.Builder
 	for i, r := range d.rows {
-		left := r.left
-		right := r.right
+		if r.kind != rowCode {
+			b.WriteString(r.headerText)
+			b.WriteString("\n")
+			continue
+		}
 
-		// Decide whether this row is the cursor and / or part of a selection.
-		isCursor := i == cursorRow && r.kind == rowCode
+		leftState, rightState := hlNone, hlNone
+		isCursor := i == cursorRow
 		inSel := false
 		selSide := activeSide
-		if sel.IsActive() && r.kind == rowCode {
+		if sel.IsActive() {
 			lo, hi := sel.Range()
 			if i >= lo && i <= hi {
 				inSel = true
@@ -149,40 +218,40 @@ func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, co
 			}
 		}
 
-		if r.kind == rowCode {
-			if d.mode == ModeSideBySide {
-				// Highlight only the active half (the inactive side gets a
-				// dimmer "context" highlight when part of a multi-line
-				// selection so the user can still tell what's covered).
-				if inSel {
-					if selSide == SideLeft {
-						left = selectBgStyle.Render(left)
-						right = dimSelectBgStyle.Render(right)
-					} else {
-						right = selectBgStyle.Render(right)
-						left = dimSelectBgStyle.Render(left)
-					}
+		if d.mode == ModeSideBySide {
+			if inSel {
+				if selSide == SideLeft {
+					leftState, rightState = hlSelected, hlSelectedDim
+				} else {
+					rightState, leftState = hlSelected, hlSelectedDim
 				}
-				if isCursor {
-					if activeSide == SideLeft {
-						left = cursorBgStyle.Render(left)
-					} else {
-						right = cursorBgStyle.Render(right)
-					}
+			}
+			if isCursor {
+				if activeSide == SideLeft {
+					leftState = hlCursor
+				} else {
+					rightState = hlCursor
 				}
-			} else {
-				if inSel {
-					left = selectBgStyle.Render(left)
-				}
-				if isCursor {
-					left = cursorBgStyle.Render(left)
-				}
+			}
+		} else {
+			if inSel {
+				leftState = hlSelected
+			}
+			if isCursor {
+				leftState = hlCursor
 			}
 		}
 
-		line := d.composeRowParts(r, left, right)
+		leftStyled := halfStyle(r.leftKind, r.hasLeft, leftState).Render(r.plainLeft)
+		var line string
+		if d.mode == ModeSideBySide {
+			rightStyled := halfStyle(r.rightKind, r.hasRight, rightState).Render(r.plainRight)
+			line = leftStyled + dividerStyle.Render("│") + rightStyled
+		} else {
+			line = leftStyled
+		}
 
-		if r.kind == rowCode && r.ref != nil && comments[*r.ref] {
+		if r.ref != nil && comments[*r.ref] {
 			line = appendMarker(line, d.width, commentMarker)
 		}
 
@@ -190,14 +259,6 @@ func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, co
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-func (d renderedDoc) composeRowParts(r row, left, right string) string {
-	if d.mode == ModeSideBySide && r.kind == rowCode {
-		divider := gutterStyle.Render("│")
-		return left + divider + right
-	}
-	return left
 }
 
 // renderInline / renderSideBySide are kept as the public entry points for
@@ -210,40 +271,27 @@ func renderSideBySide(files []File, width int) string {
 	return buildDoc(files, width, ModeSideBySide).stringify(Selection{}, -1, SideRight, nil)
 }
 
-func renderInlineLine(ln Line, width int) string {
-	const gutterWidth = 6
+// plainInlineLine builds the ANSI-free row used in inline mode.
+func plainInlineLine(ln Line, width int) string {
 	gOld := formatLineNum(ln.OldNum)
 	gNew := formatLineNum(ln.NewNum)
-	gutter := gutterStyle.Render(fmt.Sprintf("%s %s ", gOld, gNew))
-
 	marker := " "
-	textStyle := lipgloss.NewStyle()
-	rowStyle := lipgloss.NewStyle()
 	switch ln.Kind {
 	case LineAdd:
 		marker = "+"
-		textStyle = addTextStyle
-		rowStyle = addBgStyle
 	case LineDel:
 		marker = "-"
-		textStyle = delTextStyle
-		rowStyle = delBgStyle
 	case LineNoNewline:
 		marker = "\\"
-		textStyle = lipgloss.NewStyle().Faint(true)
 	}
-
-	maxText := width - (gutterWidth*2 + 2)
+	prefix := fmt.Sprintf("%s %s %s ", gOld, gNew, marker)
+	maxText := width - lipgloss.Width(prefix)
 	if maxText < 1 {
 		maxText = 1
 	}
 	text := truncate(expandTabs(ln.Text), maxText)
-	line := fmt.Sprintf("%s%s %s", gutter, marker, textStyle.Render(text))
-	pad := width - lipgloss.Width(line)
-	if pad > 0 {
-		line += strings.Repeat(" ", pad)
-	}
-	return rowStyle.Render(line)
+	line := prefix + text
+	return fitWidth(line, width)
 }
 
 // indexedPair keeps the original Line index so callers can recover a CodeRef.
@@ -301,57 +349,58 @@ func pairSideBySideWithIndex(lines []Line) []indexedPair {
 	return out
 }
 
-func renderHalfRow(ln *Line, colWidth int, isLeft bool) string {
-	const gutterWidth = 5
+// plainHalfRow builds an ANSI-free half-row used in side-by-side mode.
+func plainHalfRow(ln *Line, colWidth int, isLeft bool) string {
 	if ln == nil {
-		row := strings.Repeat(" ", colWidth)
-		return gutterStyle.Render(row)
+		return strings.Repeat(" ", colWidth)
 	}
-	var (
-		num    int
-		marker = " "
-	)
+	var num int
 	if isLeft {
 		num = ln.OldNum
 	} else {
 		num = ln.NewNum
 	}
-
-	textStyle := lipgloss.NewStyle()
-	rowStyle := lipgloss.NewStyle()
+	marker := " "
 	switch ln.Kind {
 	case LineAdd:
 		marker = "+"
-		textStyle = addTextStyle
-		rowStyle = addBgStyle
 	case LineDel:
 		marker = "-"
-		textStyle = delTextStyle
-		rowStyle = delBgStyle
 	case LineNoNewline:
 		marker = "\\"
-		textStyle = lipgloss.NewStyle().Faint(true)
 	}
-	gutter := gutterStyle.Render(fmt.Sprintf("%s ", formatLineNum(num)))
-	maxText := colWidth - (gutterWidth + 2)
+	prefix := fmt.Sprintf("%s %s ", formatLineNum(num), marker)
+	maxText := colWidth - lipgloss.Width(prefix)
 	if maxText < 1 {
 		maxText = 1
 	}
 	text := truncate(expandTabs(ln.Text), maxText)
-	line := fmt.Sprintf("%s%s %s", gutter, marker, textStyle.Render(text))
-	pad := colWidth - lipgloss.Width(line)
-	if pad > 0 {
-		line += strings.Repeat(" ", pad)
+	return fitWidth(prefix+text, colWidth)
+}
+
+// fitWidth pads `s` to exactly `width` display cells. If `s` is already
+// wider it is hard-truncated (no ellipsis) so it can't wrap to the next
+// row in the viewport.
+func fitWidth(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w == width {
+		return s
 	}
-	return rowStyle.Render(line)
+	if w < width {
+		return s + strings.Repeat(" ", width-w)
+	}
+	// Hard cut to display width — protects against any prefix/measure mismatch.
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes)
 }
 
 func appendMarker(line string, width int, marker string) string {
 	mWidth := lipgloss.Width(marker)
 	if lipgloss.Width(line)+mWidth+1 > width {
-		// drop the trailing pad to make room for the marker
 		runes := []rune(line)
-		// crude trim from end while preserving styling: rebuild by truncating.
 		for len(runes) > 0 && lipgloss.Width(string(runes))+mWidth+1 > width {
 			runes = runes[:len(runes)-1]
 		}
