@@ -439,7 +439,7 @@ func (m Model) headerView(width int) string {
 		mode = "side-by-side"
 	}
 	left := fmt.Sprintf(" %s · #%d · %s", m.Repo, m.PRNumber, m.Title)
-	right := fmt.Sprintf("mode: %s ", mode)
+	right := fmt.Sprintf("mode: %s · pending: %d ", mode, len(m.pending))
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
@@ -449,9 +449,9 @@ func (m Model) headerView(width int) string {
 }
 
 func (m Model) footerView(width int) string {
-	hints := " j/k scroll · ctrl-d/u page · g/G top/bot · tab toggle mode · q/esc close "
+	hints := " j/k cursor · g/G top/bot · V/⌃V select · c comment · R/A/X submit · tab mode · q close "
 	if lipgloss.Width(hints) > width {
-		hints = " tab: mode · q: close "
+		hints = " c: comment · R: submit · q: close "
 	}
 	return lipgloss.NewStyle().Faint(true).Render(hints)
 }
