@@ -70,6 +70,9 @@ type renderedDoc struct {
 func buildDoc(files []File, width int, mode Mode) renderedDoc {
 	doc := renderedDoc{mode: mode, width: width}
 	if mode == ModeSideBySide {
+		// Reserve 1 cell for the divider; split the remainder evenly. If
+		// `width` is even we deliberately lose one cell to the right column
+		// instead of overshooting the viewport width and triggering wrap.
 		doc.colWidth = (width - 1) / 2
 		if doc.colWidth < 10 {
 			doc.colWidth = 10
@@ -255,6 +258,11 @@ func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, co
 			line = appendMarker(line, d.width, commentMarker)
 		}
 
+		// Hard-cap the composed row to the viewport width so the embedded
+		// viewport never tries to soft-wrap (which would push the diff out
+		// of alignment and ruin column tracking).
+		line = capDisplay(line, d.width)
+
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
@@ -390,6 +398,21 @@ func fitWidth(s string, width int) string {
 		return s + strings.Repeat(" ", width-w)
 	}
 	// Hard cut to display width — protects against any prefix/measure mismatch.
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes)
+}
+
+// capDisplay is fitWidth's truncate-only sibling: it never adds padding (so
+// it preserves trailing ANSI resets coming out of styled segments) but does
+// hard-cut content wider than `width`. Used for fully composed rows where
+// padding has already been baked into each half.
+func capDisplay(s string, width int) string {
+	if lipgloss.Width(s) <= width {
+		return s
+	}
 	runes := []rune(s)
 	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
 		runes = runes[:len(runes)-1]

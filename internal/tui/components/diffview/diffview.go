@@ -64,6 +64,7 @@ type Model struct {
 // NewModel constructs an empty diff viewer.
 func NewModel(ctx *context.ProgramContext) Model {
 	vp := viewport.New(viewport.WithWidth(0), viewport.WithHeight(0))
+	vp.SoftWrap = false
 	return Model{
 		ctx:      ctx,
 		viewport: vp,
