@@ -16,6 +16,8 @@ type DiffKeyMap struct {
 	VisualBlock    key.Binding
 	ClearSelection key.Binding
 	Comment        key.Binding
+	Help           key.Binding
+	SwitchSide     key.Binding
 }
 
 var DiffKeys = DiffKeyMap{
@@ -66,6 +68,14 @@ var DiffKeys = DiffKeyMap{
 	Comment: key.NewBinding(
 		key.WithKeys("c"),
 		key.WithHelp("c", "comment on selection"),
+	),
+	Help: key.NewBinding(
+		key.WithKeys("?"),
+		key.WithHelp("?", "toggle help"),
+	),
+	SwitchSide: key.NewBinding(
+		key.WithKeys("h", "l", "left", "right"),
+		key.WithHelp("h/l", "switch side (side-by-side)"),
 	),
 }
 

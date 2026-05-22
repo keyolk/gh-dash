@@ -48,6 +48,11 @@ type Model struct {
 	sel       Selection
 	codeRows  []int
 	comments  map[CodeRef]bool
+	// side is the currently-active half in side-by-side mode (LEFT vs
+	// RIGHT). Inline mode pins this to SideRight.
+	side Side
+	// helpVisible toggles a help overlay listing diff-viewer key bindings.
+	helpVisible bool
 
 	pending []PendingComment
 	editor  commentEditor
@@ -128,8 +133,54 @@ func (m *Model) ToggleMode() {
 		m.mode = ModeSideBySide
 	} else {
 		m.mode = ModeInline
+		// inline view has no meaningful left/right distinction.
+		m.side = SideRight
 	}
 	m.rebuild()
+}
+
+// ActiveSide reports which half of the side-by-side render the cursor sits on.
+// Inline mode always reports SideRight.
+func (m *Model) ActiveSide() Side { return m.side }
+
+// ToggleSide swaps the active half in side-by-side mode. No-op in inline.
+func (m *Model) ToggleSide() {
+	if m.mode != ModeSideBySide {
+		return
+	}
+	if m.side == SideRight {
+		m.side = SideLeft
+	} else {
+		m.side = SideRight
+	}
+	if m.sel.IsActive() {
+		m.sel.Side = m.side
+	}
+	m.refreshViewport()
+}
+
+// SetSide forces the active half to a specific side.
+func (m *Model) SetSide(s Side) {
+	if m.mode != ModeSideBySide {
+		return
+	}
+	if m.side == s {
+		return
+	}
+	m.side = s
+	if m.sel.IsActive() {
+		m.sel.Side = s
+	}
+	m.refreshViewport()
+}
+
+// HelpVisible reports whether the in-viewer help overlay is showing.
+func (m *Model) HelpVisible() bool { return m.helpVisible }
+
+// ToggleHelp shows / hides the diff viewer's own help overlay.
+func (m *Model) ToggleHelp() {
+	m.helpVisible = !m.helpVisible
+	m.refreshViewport()
 }
 
 // UpdateProgramContext refreshes the viewport dimensions from the program context.
@@ -207,6 +258,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+v":
 			m.StartSelection(SelectBlock)
+			return m, nil
+		case "h", "left":
+			if m.mode == ModeSideBySide {
+				m.SetSide(SideLeft)
+				return m, nil
+			}
+		case "l", "right":
+			if m.mode == ModeSideBySide {
+				m.SetSide(SideRight)
+				return m, nil
+			}
+		case "?":
+			m.ToggleHelp()
 			return m, nil
 		}
 	}
@@ -402,6 +466,50 @@ func (m Model) View() string {
 	return style.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
 }
 
+// HelpView returns the help overlay (or "" when hidden). Composed by the
+// top-level UI as its own layer.
+func (m Model) HelpView() string {
+	if !m.helpVisible {
+		return ""
+	}
+	w, h := m.size()
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("12")).
+		Padding(0, 1)
+	title := lipgloss.NewStyle().Bold(true).Render("Diff viewer keys")
+	rows := [][2]string{
+		{"j/k or ↓/↑", "cursor down / up"},
+		{"g / G", "go to top / bottom"},
+		{"ctrl+d / ctrl+u", "half-page down / up"},
+		{"tab", "toggle inline / side-by-side"},
+		{"h / l (←/→)", "switch active side (side-by-side)"},
+		{"V", "visual-line selection"},
+		{"ctrl+v", "visual-block selection"},
+		{"esc", "clear selection (then close)"},
+		{"c", "comment on cursor / selection"},
+		{"ctrl+s / esc", "save / cancel comment editor"},
+		{"R / A / X", "submit review (comment / approve / request)"},
+		{"?", "toggle this help"},
+		{"q", "close diff"},
+	}
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	var lines []string
+	lines = append(lines, title, "")
+	for _, r := range rows {
+		lines = append(lines, fmt.Sprintf("%s  %s", keyStyle.Render(padRight(r[0], 18)), r[1]))
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, box.Render(body))
+}
+
+func padRight(s string, n int) string {
+	if len(s) >= n {
+		return s
+	}
+	return s + strings.Repeat(" ", n-len(s))
+}
+
 // EditorView returns the editor overlay (or "" when inactive). The top-level
 // UI composes this as its own layer so it can sit above the diff frame.
 func (m Model) EditorView() string {
@@ -438,8 +546,16 @@ func (m Model) headerView(width int) string {
 	if m.mode == ModeSideBySide {
 		mode = "side-by-side"
 	}
+	side := ""
+	if m.mode == ModeSideBySide {
+		if m.side == SideLeft {
+			side = " · side: ← old"
+		} else {
+			side = " · side: new →"
+		}
+	}
 	left := fmt.Sprintf(" %s · #%d · %s", m.Repo, m.PRNumber, m.Title)
-	right := fmt.Sprintf("mode: %s · pending: %d ", mode, len(m.pending))
+	right := fmt.Sprintf("mode: %s%s · pending: %d ", mode, side, len(m.pending))
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
@@ -449,9 +565,9 @@ func (m Model) headerView(width int) string {
 }
 
 func (m Model) footerView(width int) string {
-	hints := " j/k cursor · g/G top/bot · V/⌃V select · c comment · R/A/X submit · tab mode · q close "
+	hints := " j/k cursor · h/l side · V/⌃V select · c comment · R/A/X submit · tab mode · ? help · q close "
 	if lipgloss.Width(hints) > width {
-		hints = " c: comment · R: submit · q: close "
+		hints = " c: comment · R: submit · ?: help · q: close "
 	}
 	return lipgloss.NewStyle().Faint(true).Render(hints)
 }
@@ -481,7 +597,7 @@ func (m *Model) refreshViewport() {
 	if m.Loading || m.err != nil {
 		return
 	}
-	m.viewport.SetContent(m.doc.stringify(m.sel, m.cursorRow, m.comments))
+	m.viewport.SetContent(m.doc.stringify(m.sel, m.cursorRow, m.side, m.comments))
 }
 
 // moveCursor advances the cursor by `delta` selectable code rows.
@@ -517,26 +633,55 @@ func (m *Model) CursorRef() *CodeRef {
 
 // SelectionRefs returns every CodeRef covered by the active selection (or
 // just the cursor's ref if no selection is active). Empty when nothing is
-// renderable.
+// renderable. In side-by-side mode the refs are read from the active side;
+// inline mode falls back to the row's primary ref.
 func (m *Model) SelectionRefs() []CodeRef {
 	if len(m.doc.rows) == 0 {
 		return nil
 	}
 	lo, hi := m.cursorRow, m.cursorRow
 	if m.sel.IsActive() {
-		lo, hi, _, _ = m.sel.Range()
+		lo, hi = m.sel.Range()
+	}
+	side := m.side
+	if m.sel.IsActive() {
+		side = m.sel.Side
 	}
 	var out []CodeRef
 	for i := lo; i <= hi && i < len(m.doc.rows); i++ {
 		r := m.doc.rows[i]
-		if r.kind == rowCode && r.ref != nil {
-			out = append(out, *r.ref)
+		if r.kind != rowCode {
+			continue
+		}
+		ref := pickSideRef(r, side)
+		if ref != nil {
+			out = append(out, *ref)
 		}
 	}
 	return out
 }
 
-// StartSelection begins a selection in the given mode anchored at the cursor.
+// pickSideRef returns the row's ref for the requested side, falling back to
+// the other side / the primary ref if the requested half is empty (e.g. an
+// add line has no LEFT counterpart).
+func pickSideRef(r row, side Side) *CodeRef {
+	if m := r.leftRef; side == SideLeft && m != nil {
+		return m
+	}
+	if m := r.rightRef; side == SideRight && m != nil {
+		return m
+	}
+	if r.leftRef != nil {
+		return r.leftRef
+	}
+	if r.rightRef != nil {
+		return r.rightRef
+	}
+	return r.ref
+}
+
+// StartSelection begins a selection in the given mode anchored at the cursor,
+// pinned to the current active side.
 func (m *Model) StartSelection(mode SelectMode) {
 	if m.cursorRow < 0 {
 		return
@@ -545,6 +690,7 @@ func (m *Model) StartSelection(mode SelectMode) {
 		Mode:      mode,
 		AnchorRow: m.cursorRow,
 		CursorRow: m.cursorRow,
+		Side:      m.side,
 	}
 	m.refreshViewport()
 }

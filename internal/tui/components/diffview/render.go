@@ -8,16 +8,17 @@ import (
 )
 
 var (
-	gutterStyle    = lipgloss.NewStyle().Faint(true)
-	addBgStyle     = lipgloss.NewStyle().Background(lipgloss.Color("22"))
-	delBgStyle     = lipgloss.NewStyle().Background(lipgloss.Color("52"))
-	addTextStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	delTextStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	fileHdrStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	hunkHdrStyle   = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("13"))
-	cursorBgStyle  = lipgloss.NewStyle().Background(lipgloss.Color("237"))
-	selectBgStyle  = lipgloss.NewStyle().Background(lipgloss.Color("24"))
-	commentMarker  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("💬")
+	gutterStyle      = lipgloss.NewStyle().Faint(true)
+	addBgStyle       = lipgloss.NewStyle().Background(lipgloss.Color("22"))
+	delBgStyle       = lipgloss.NewStyle().Background(lipgloss.Color("52"))
+	addTextStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	delTextStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	fileHdrStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	hunkHdrStyle     = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("13"))
+	cursorBgStyle    = lipgloss.NewStyle().Background(lipgloss.Color("237"))
+	selectBgStyle    = lipgloss.NewStyle().Background(lipgloss.Color("24"))
+	dimSelectBgStyle = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	commentMarker    = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("💬")
 )
 
 // rowKind classifies a rendered row so we know whether it's selectable.
@@ -130,51 +131,83 @@ func codeRef(path string, fi, hi, li int, ln Line) *CodeRef {
 // stringify produces the final viewport content with cursor / selection
 // highlights applied. Highlight passes are cheap because we work on rendered
 // rows instead of re-laying-out the full diff.
-func (d renderedDoc) stringify(sel Selection, cursorRow int, comments map[CodeRef]bool) string {
+func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, comments map[CodeRef]bool) string {
 	var b strings.Builder
 	for i, r := range d.rows {
-		line := d.composeRow(r)
+		left := r.left
+		right := r.right
 
-		// Decorate with comment marker on the right (truncating the line
-		// slightly so the marker doesn't push past the row width).
+		// Decide whether this row is the cursor and / or part of a selection.
+		isCursor := i == cursorRow && r.kind == rowCode
+		inSel := false
+		selSide := activeSide
+		if sel.IsActive() && r.kind == rowCode {
+			lo, hi := sel.Range()
+			if i >= lo && i <= hi {
+				inSel = true
+				selSide = sel.Side
+			}
+		}
+
+		if r.kind == rowCode {
+			if d.mode == ModeSideBySide {
+				// Highlight only the active half (the inactive side gets a
+				// dimmer "context" highlight when part of a multi-line
+				// selection so the user can still tell what's covered).
+				if inSel {
+					if selSide == SideLeft {
+						left = selectBgStyle.Render(left)
+						right = dimSelectBgStyle.Render(right)
+					} else {
+						right = selectBgStyle.Render(right)
+						left = dimSelectBgStyle.Render(left)
+					}
+				}
+				if isCursor {
+					if activeSide == SideLeft {
+						left = cursorBgStyle.Render(left)
+					} else {
+						right = cursorBgStyle.Render(right)
+					}
+				}
+			} else {
+				if inSel {
+					left = selectBgStyle.Render(left)
+				}
+				if isCursor {
+					left = cursorBgStyle.Render(left)
+				}
+			}
+		}
+
+		line := d.composeRowParts(r, left, right)
+
 		if r.kind == rowCode && r.ref != nil && comments[*r.ref] {
 			line = appendMarker(line, d.width, commentMarker)
 		}
 
-		// Apply selection / cursor highlight.
-		if r.kind == rowCode {
-			if sel.IsActive() {
-				lo, hi, _, _ := sel.Range()
-				if i >= lo && i <= hi {
-					line = selectBgStyle.Render(line)
-				}
-			}
-			if i == cursorRow {
-				line = cursorBgStyle.Render(line)
-			}
-		}
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func (d renderedDoc) composeRow(r row) string {
+func (d renderedDoc) composeRowParts(r row, left, right string) string {
 	if d.mode == ModeSideBySide && r.kind == rowCode {
 		divider := gutterStyle.Render("│")
-		return r.left + divider + r.right
+		return left + divider + right
 	}
-	return r.left
+	return left
 }
 
 // renderInline / renderSideBySide are kept as the public entry points for
 // non-stateful rendering (tests, snapshots).
 func renderInline(files []File, width int) string {
-	return buildDoc(files, width, ModeInline).stringify(Selection{}, -1, nil)
+	return buildDoc(files, width, ModeInline).stringify(Selection{}, -1, SideRight, nil)
 }
 
 func renderSideBySide(files []File, width int) string {
-	return buildDoc(files, width, ModeSideBySide).stringify(Selection{}, -1, nil)
+	return buildDoc(files, width, ModeSideBySide).stringify(Selection{}, -1, SideRight, nil)
 }
 
 func renderInlineLine(ln Line, width int) string {
