@@ -187,11 +187,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// In-app diff viewer captures keys while open.
 		if m.diffView.IsOpen {
 			switch {
-			case key.Matches(msg, keys.DiffKeys.Close):
-				m.diffView.Close()
-				return m, nil
 			case key.Matches(msg, keys.DiffKeys.ToggleMode):
 				m.diffView.ToggleMode()
+				return m, nil
+			case msg.String() == "esc":
+				// esc clears an active selection first, then closes.
+				if m.diffView.SelectionMode() != diffview.SelectNone {
+					m.diffView.ClearSelection()
+				} else {
+					m.diffView.Close()
+				}
+				return m, nil
+			case key.Matches(msg, keys.DiffKeys.Close):
+				m.diffView.Close()
 				return m, nil
 			}
 			m.diffView, cmd = m.diffView.Update(msg)

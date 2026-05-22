@@ -42,8 +42,16 @@ type Model struct {
 	files    []File
 	err      error
 	viewport viewport.Model
-	// rendered is the cached rendered diff text for the current mode/size.
-	rendered string
+	doc      renderedDoc
+
+	cursorRow int
+	sel       Selection
+	// codeRows holds the indices of selectable code rows in doc.rows so
+	// cursor navigation can skip headers in O(1).
+	codeRows []int
+	// comments tracks which CodeRefs have a pending or fetched comment;
+	// values added in later phases. Kept here so render can show markers.
+	comments map[CodeRef]bool
 }
 
 // NewModel constructs an empty diff viewer.
@@ -65,7 +73,13 @@ func (m *Model) Open(prNumber int, repo, title string) tea.Cmd {
 	m.Title = title
 	m.files = nil
 	m.err = nil
-	m.rendered = ""
+	m.doc = renderedDoc{}
+	m.codeRows = nil
+	m.cursorRow = -1
+	m.sel = Selection{}
+	if m.comments == nil {
+		m.comments = map[CodeRef]bool{}
+	}
 	m.viewport.SetContent("")
 	m.viewport.GotoTop()
 
@@ -88,7 +102,10 @@ func (m *Model) Close() {
 	m.Loading = false
 	m.files = nil
 	m.err = nil
-	m.rendered = ""
+	m.doc = renderedDoc{}
+	m.codeRows = nil
+	m.cursorRow = -1
+	m.sel = Selection{}
 	m.viewport.SetContent("")
 }
 
@@ -141,9 +158,65 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !m.IsOpen {
 		return m, nil
 	}
+	if km, ok := msg.(tea.KeyMsg); ok {
+		switch km.String() {
+		case "j", "down":
+			m.moveCursor(1)
+			m.ensureCursorVisible()
+			return m, nil
+		case "k", "up":
+			m.moveCursor(-1)
+			m.ensureCursorVisible()
+			return m, nil
+		case "g", "home":
+			if len(m.codeRows) > 0 {
+				m.cursorRow = m.codeRows[0]
+				if m.sel.Mode != SelectNone {
+					m.sel.CursorRow = m.cursorRow
+				}
+				m.viewport.GotoTop()
+				m.refreshViewport()
+			}
+			return m, nil
+		case "G", "end":
+			if len(m.codeRows) > 0 {
+				m.cursorRow = m.codeRows[len(m.codeRows)-1]
+				if m.sel.Mode != SelectNone {
+					m.sel.CursorRow = m.cursorRow
+				}
+				m.viewport.GotoBottom()
+				m.refreshViewport()
+			}
+			return m, nil
+		case "V":
+			m.StartSelection(SelectLine)
+			return m, nil
+		case "ctrl+v":
+			m.StartSelection(SelectBlock)
+			return m, nil
+		}
+	}
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
+}
+
+// ensureCursorVisible scrolls the viewport so the cursor row stays inside
+// the visible window.
+func (m *Model) ensureCursorVisible() {
+	if m.cursorRow < 0 {
+		return
+	}
+	top := m.viewport.YOffset()
+	h := m.viewport.Height()
+	if h <= 0 {
+		return
+	}
+	if m.cursorRow < top {
+		m.viewport.SetYOffset(m.cursorRow)
+	} else if m.cursorRow >= top+h {
+		m.viewport.SetYOffset(m.cursorRow - h + 1)
+	}
 }
 
 // View renders the diff overlay.
@@ -223,11 +296,110 @@ func (m *Model) rebuild() {
 		return
 	}
 	width, _ := m.size()
-	switch m.mode {
-	case ModeSideBySide:
-		m.rendered = renderSideBySide(m.files, width)
-	default:
-		m.rendered = renderInline(m.files, width)
+	m.doc = buildDoc(m.files, width, m.mode)
+	m.codeRows = m.codeRows[:0]
+	for i, r := range m.doc.rows {
+		if r.kind == rowCode {
+			m.codeRows = append(m.codeRows, i)
+		}
 	}
-	m.viewport.SetContent(m.rendered)
+	if m.cursorRow < 0 && len(m.codeRows) > 0 {
+		m.cursorRow = m.codeRows[0]
+	}
+	m.refreshViewport()
+}
+
+// refreshViewport rerenders the (already laid-out) doc with the current
+// cursor / selection state. Cheap: no parsing or row layout happens.
+func (m *Model) refreshViewport() {
+	if m.Loading || m.err != nil {
+		return
+	}
+	m.viewport.SetContent(m.doc.stringify(m.sel, m.cursorRow, m.comments))
+}
+
+// moveCursor advances the cursor by `delta` selectable code rows.
+func (m *Model) moveCursor(delta int) {
+	if len(m.codeRows) == 0 {
+		return
+	}
+	idx := indexOf(m.codeRows, m.cursorRow)
+	if idx < 0 {
+		idx = 0
+	}
+	idx += delta
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(m.codeRows) {
+		idx = len(m.codeRows) - 1
+	}
+	m.cursorRow = m.codeRows[idx]
+	if m.sel.Mode != SelectNone {
+		m.sel.CursorRow = m.cursorRow
+	}
+	m.refreshViewport()
+}
+
+// CursorRef returns the CodeRef under the cursor, if any.
+func (m *Model) CursorRef() *CodeRef {
+	if m.cursorRow < 0 || m.cursorRow >= len(m.doc.rows) {
+		return nil
+	}
+	return m.doc.rows[m.cursorRow].ref
+}
+
+// SelectionRefs returns every CodeRef covered by the active selection (or
+// just the cursor's ref if no selection is active). Empty when nothing is
+// renderable.
+func (m *Model) SelectionRefs() []CodeRef {
+	if len(m.doc.rows) == 0 {
+		return nil
+	}
+	lo, hi := m.cursorRow, m.cursorRow
+	if m.sel.IsActive() {
+		lo, hi, _, _ = m.sel.Range()
+	}
+	var out []CodeRef
+	for i := lo; i <= hi && i < len(m.doc.rows); i++ {
+		r := m.doc.rows[i]
+		if r.kind == rowCode && r.ref != nil {
+			out = append(out, *r.ref)
+		}
+	}
+	return out
+}
+
+// StartSelection begins a selection in the given mode anchored at the cursor.
+func (m *Model) StartSelection(mode SelectMode) {
+	if m.cursorRow < 0 {
+		return
+	}
+	m.sel = Selection{
+		Mode:      mode,
+		AnchorRow: m.cursorRow,
+		CursorRow: m.cursorRow,
+	}
+	m.refreshViewport()
+}
+
+// ClearSelection cancels any active selection.
+func (m *Model) ClearSelection() {
+	if m.sel.Mode == SelectNone {
+		return
+	}
+	m.sel = Selection{}
+	m.refreshViewport()
+}
+
+// SelectionMode reports the active selection mode.
+func (m *Model) SelectionMode() SelectMode { return m.sel.Mode }
+
+func indexOf(xs []int, v int) int {
+	for i, x := range xs {
+		if x == v {
+			return i
+		}
+	}
+	return -1
 }
