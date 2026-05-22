@@ -438,11 +438,24 @@ func (m *Model) ensureCursorVisible() {
 	if h <= 0 {
 		return
 	}
-	if m.cursorRow < top {
-		m.viewport.SetYOffset(m.cursorRow)
-	} else if m.cursorRow >= top+h {
-		m.viewport.SetYOffset(m.cursorRow - h + 1)
+	visualRow := m.visualRowOf(m.cursorRow)
+	if visualRow < top {
+		m.viewport.SetYOffset(visualRow)
+	} else if visualRow >= top+h {
+		m.viewport.SetYOffset(visualRow - h + 1)
 	}
+}
+
+// visualRowOf returns the first visual row produced by logical doc row `i`.
+func (m *Model) visualRowOf(i int) int {
+	if i < 0 || i >= len(m.doc.rows) {
+		return 0
+	}
+	visual := 0
+	for j := 0; j < i; j++ {
+		visual += m.doc.visualHeight(j)
+	}
+	return visual
 }
 
 // View renders the diff overlay. We render the full screen ourselves

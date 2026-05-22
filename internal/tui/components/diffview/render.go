@@ -38,19 +38,22 @@ const (
 	rowCode
 )
 
-// row is one displayable line. For code rows we store plain (ANSI-free)
-// text and the kind of each half so stringify can pick a final background
-// in one pass without fighting inner ANSI resets.
+// row is one displayable diff line. For code rows we store plain (ANSI-free)
+// chunks of either half so stringify can pick a final background in one
+// pass. Long content in either half is split into colWidth-cell chunks
+// up-front: the row keeps the chunk list per side and stringify renders
+// the chunks as multiple physical rows, padding the shorter side out with
+// blank chunks so things stay aligned.
 type row struct {
 	kind       rowKind
 	headerText string // pre-styled text for non-code rows
 
-	plainLeft  string
-	plainRight string
-	leftKind   LineKind
-	rightKind  LineKind
-	hasLeft    bool
-	hasRight   bool
+	leftChunks  []string // plain (ANSI-free) chunks, each colWidth/width wide
+	rightChunks []string
+	leftKind    LineKind
+	rightKind   LineKind
+	hasLeft     bool
+	hasRight    bool
 
 	ref      *CodeRef // primary ref (right side preferred, falls back to left)
 	leftRef  *CodeRef
@@ -96,12 +99,13 @@ func buildDoc(files []File, width int, mode Mode) renderedDoc {
 			if mode == ModeInline {
 				for li, ln := range h.Lines {
 					ref := codeRef(f.Path(), fi, hi, li, ln)
+					chunks := buildInlineChunks(ln, width)
 					doc.rows = append(doc.rows, row{
-						kind:      rowCode,
-						plainLeft: plainInlineLine(ln, width),
-						leftKind:  ln.Kind,
-						hasLeft:   true,
-						ref:       ref,
+						kind:       rowCode,
+						leftChunks: chunks,
+						leftKind:   ln.Kind,
+						hasLeft:    true,
+						ref:        ref,
 					})
 				}
 				continue
@@ -110,40 +114,36 @@ func buildDoc(files []File, width int, mode Mode) renderedDoc {
 			pairs := pairSideBySideWithIndex(h.Lines)
 			for _, p := range pairs {
 				var lRef, rRef *CodeRef
-				var lTxt, rTxt string
+				var lChunks, rChunks []string
 				var lKind, rKind LineKind
 				hasL, hasR := false, false
 				if p.left != nil {
 					lRef = codeRef(f.Path(), fi, hi, p.leftIdx, *p.left)
-					lTxt = plainHalfRow(p.left, doc.colWidth, true)
+					lChunks = buildHalfChunks(p.left, doc.colWidth, true)
 					lKind = p.left.Kind
 					hasL = true
-				} else {
-					lTxt = strings.Repeat(" ", doc.colWidth)
 				}
 				if p.right != nil {
 					rRef = codeRef(f.Path(), fi, hi, p.rightIdx, *p.right)
-					rTxt = plainHalfRow(p.right, doc.colWidth, false)
+					rChunks = buildHalfChunks(p.right, doc.colWidth, false)
 					rKind = p.right.Kind
 					hasR = true
-				} else {
-					rTxt = strings.Repeat(" ", doc.colWidth)
 				}
 				primary := rRef
 				if primary == nil {
 					primary = lRef
 				}
 				doc.rows = append(doc.rows, row{
-					kind:       rowCode,
-					plainLeft:  lTxt,
-					plainRight: rTxt,
-					leftKind:   lKind,
-					rightKind:  rKind,
-					hasLeft:    hasL,
-					hasRight:   hasR,
-					ref:        primary,
-					leftRef:    lRef,
-					rightRef:   rRef,
+					kind:        rowCode,
+					leftChunks:  lChunks,
+					rightChunks: rChunks,
+					leftKind:    lKind,
+					rightKind:   rKind,
+					hasLeft:     hasL,
+					hasRight:    hasR,
+					ref:         primary,
+					leftRef:     lRef,
+					rightRef:    rRef,
 				})
 			}
 		}
@@ -199,7 +199,10 @@ func halfStyle(kind LineKind, hasContent bool, state highlightState) lipgloss.St
 }
 
 // stringify produces the final viewport content with cursor / selection
-// highlights applied.
+// highlights applied. Each diff "row" may expand into multiple visual rows
+// if either half wraps; the cursor and selection refer to the logical row,
+// so every visual row produced by a selected logical row gets the same
+// highlight.
 func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, comments map[CodeRef]bool) string {
 	var b strings.Builder
 	for i, r := range d.rows {
@@ -209,7 +212,6 @@ func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, co
 			continue
 		}
 
-		leftState, rightState := hlNone, hlNone
 		isCursor := i == cursorRow
 		inSel := false
 		selSide := activeSide
@@ -221,55 +223,118 @@ func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, co
 			}
 		}
 
+		leftStateBase, rightStateBase := hlNone, hlNone
 		if d.mode == ModeSideBySide {
 			if inSel {
 				if selSide == SideLeft {
-					leftState, rightState = hlSelected, hlSelectedDim
+					leftStateBase, rightStateBase = hlSelected, hlSelectedDim
 				} else {
-					rightState, leftState = hlSelected, hlSelectedDim
+					rightStateBase, leftStateBase = hlSelected, hlSelectedDim
 				}
 			}
-			if isCursor {
-				if activeSide == SideLeft {
-					leftState = hlCursor
-				} else {
-					rightState = hlCursor
-				}
-			}
-		} else {
-			if inSel {
-				leftState = hlSelected
-			}
-			if isCursor {
-				leftState = hlCursor
-			}
+		} else if inSel {
+			leftStateBase = hlSelected
 		}
 
-		leftStyled := halfStyle(r.leftKind, r.hasLeft, leftState).Render(r.plainLeft)
-		var line string
+		// Build a deterministic number of visual rows per logical row by
+		// padding the shorter half with blank chunks.
+		var nVisual int
 		if d.mode == ModeSideBySide {
-			rightStyled := halfStyle(r.rightKind, r.hasRight, rightState).Render(r.plainRight)
-			line = leftStyled + dividerStyle.Render("│") + rightStyled
+			if len(r.leftChunks) > nVisual {
+				nVisual = len(r.leftChunks)
+			}
+			if len(r.rightChunks) > nVisual {
+				nVisual = len(r.rightChunks)
+			}
+			if nVisual == 0 {
+				nVisual = 1
+			}
 		} else {
-			line = leftStyled
+			nVisual = len(r.leftChunks)
+			if nVisual == 0 {
+				nVisual = 1
+			}
 		}
 
-		if r.ref != nil && comments[*r.ref] {
-			line = appendMarker(line, d.width, commentMarker)
+		for vi := 0; vi < nVisual; vi++ {
+			leftState := leftStateBase
+			rightState := rightStateBase
+			// Cursor only highlights the first visual row of the logical row
+			// to keep the "current line" intuition.
+			if isCursor && vi == 0 {
+				if d.mode == ModeSideBySide {
+					if activeSide == SideLeft {
+						leftState = hlCursor
+					} else {
+						rightState = hlCursor
+					}
+				} else {
+					leftState = hlCursor
+				}
+			}
+
+			var leftCell, rightCell string
+			if d.mode == ModeSideBySide {
+				leftCell = pickChunk(r.leftChunks, vi, d.colWidth)
+				rightCell = pickChunk(r.rightChunks, vi, d.colWidth)
+				leftStyled := halfStyle(r.leftKind, r.hasLeft, leftState).Render(leftCell)
+				rightStyled := halfStyle(r.rightKind, r.hasRight, rightState).Render(rightCell)
+				line := leftStyled + dividerStyle.Render("│") + rightStyled
+
+				// On the first visual row, append the comment marker if any.
+				if vi == 0 && r.ref != nil && comments[*r.ref] {
+					line = appendMarker(line, d.width, commentMarker)
+				}
+				b.WriteString(capDisplay(line, d.width-1))
+				b.WriteString("\n")
+				continue
+			}
+
+			leftCell = pickChunk(r.leftChunks, vi, d.width)
+			line := halfStyle(r.leftKind, r.hasLeft, leftState).Render(leftCell)
+			if vi == 0 && r.ref != nil && comments[*r.ref] {
+				line = appendMarker(line, d.width, commentMarker)
+			}
+			b.WriteString(capDisplay(line, d.width-1))
+			b.WriteString("\n")
 		}
-
-		// Hard-cap the composed row to width-1 cells. The 1-cell margin
-		// absorbs any drift between our lipgloss.Width measurements (which
-		// the embedded viewport uses to decide whether to wrap) and what
-		// the terminal actually renders — long lines with mixed-width
-		// glyphs or ellipsis can otherwise tip a row one cell over and
-		// trigger wrap.
-		line = capDisplay(line, d.width-1)
-
-		b.WriteString(line)
-		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// pickChunk returns the visual-row-`i` chunk (or a blank pad of width `w`).
+func pickChunk(chunks []string, i, w int) string {
+	if i < len(chunks) {
+		return chunks[i]
+	}
+	return strings.Repeat(" ", w)
+}
+
+// visualHeight returns the number of physical viewport rows that logical
+// row `i` occupies after wrapping. Non-code rows always take one row.
+func (d renderedDoc) visualHeight(i int) int {
+	if i < 0 || i >= len(d.rows) {
+		return 0
+	}
+	r := d.rows[i]
+	if r.kind != rowCode {
+		return 1
+	}
+	if d.mode == ModeSideBySide {
+		n := len(r.leftChunks)
+		if len(r.rightChunks) > n {
+			n = len(r.rightChunks)
+		}
+		if n == 0 {
+			n = 1
+		}
+		return n
+	}
+	n := len(r.leftChunks)
+	if n == 0 {
+		n = 1
+	}
+	return n
 }
 
 // renderInline / renderSideBySide are kept as the public entry points for
@@ -282,8 +347,10 @@ func renderSideBySide(files []File, width int) string {
 	return buildDoc(files, width, ModeSideBySide).stringify(Selection{}, -1, SideRight, nil)
 }
 
-// plainInlineLine builds the ANSI-free row used in inline mode.
-func plainInlineLine(ln Line, width int) string {
+// buildInlineChunks slices an inline-mode line into colWidth-cell chunks,
+// keeping the gutter intact on the first chunk and indented spaces on
+// continuation chunks so wrapped text lines up under the original.
+func buildInlineChunks(ln Line, width int) []string {
 	gOld := formatLineNum(ln.OldNum)
 	gNew := formatLineNum(ln.NewNum)
 	marker := " "
@@ -296,13 +363,95 @@ func plainInlineLine(ln Line, width int) string {
 		marker = "\\"
 	}
 	prefix := fmt.Sprintf("%s %s %s ", gOld, gNew, marker)
-	maxText := width - lipgloss.Width(prefix)
-	if maxText < 1 {
-		maxText = 1
+	contPrefix := strings.Repeat(" ", lipgloss.Width(prefix))
+	return wrapWithPrefixes(prefix, contPrefix, expandTabs(ln.Text), width)
+}
+
+// buildHalfChunks slices a side-by-side half-row into colWidth-cell chunks.
+func buildHalfChunks(ln *Line, colWidth int, isLeft bool) []string {
+	if ln == nil {
+		return nil
 	}
-	text := truncate(expandTabs(ln.Text), maxText)
-	line := prefix + text
-	return fitWidth(line, width)
+	var num int
+	if isLeft {
+		num = ln.OldNum
+	} else {
+		num = ln.NewNum
+	}
+	marker := " "
+	switch ln.Kind {
+	case LineAdd:
+		marker = "+"
+	case LineDel:
+		marker = "-"
+	case LineNoNewline:
+		marker = "\\"
+	}
+	prefix := fmt.Sprintf("%s %s ", formatLineNum(num), marker)
+	contPrefix := strings.Repeat(" ", lipgloss.Width(prefix))
+	return wrapWithPrefixes(prefix, contPrefix, expandTabs(ln.Text), colWidth)
+}
+
+// wrapWithPrefixes wraps `text` into chunks of exactly `width` display cells.
+// The first chunk uses `firstPrefix`; subsequent chunks use `contPrefix`.
+// Every chunk is padded on the right to `width` so callers can stack them
+// into visual rows without worrying about column drift.
+func wrapWithPrefixes(firstPrefix, contPrefix, text string, width int) []string {
+	if width < 4 {
+		width = 4
+	}
+	var chunks []string
+	textRunes := []rune(text)
+
+	first := true
+	for {
+		var prefix string
+		if first {
+			prefix = firstPrefix
+			first = false
+		} else {
+			prefix = contPrefix
+		}
+		room := width - lipgloss.Width(prefix)
+		if room < 1 {
+			// pathological — prefix doesn't fit; emit prefix alone padded.
+			chunks = append(chunks, fitWidth(prefix, width))
+			return chunks
+		}
+		if len(textRunes) == 0 {
+			// Whole text consumed (or empty). Emit at least one chunk so the
+			// gutter shows up for blank context lines.
+			if len(chunks) == 0 {
+				chunks = append(chunks, fitWidth(prefix, width))
+			}
+			return chunks
+		}
+		// take up to `room` cells worth of runes.
+		take := 0
+		acc := 0
+		for take < len(textRunes) {
+			w := runeWidth(textRunes[take])
+			if acc+w > room {
+				break
+			}
+			acc += w
+			take++
+		}
+		if take == 0 {
+			// A single rune wider than `room` — force-take it to avoid an
+			// infinite loop. capDisplay later trims if needed.
+			take = 1
+		}
+		chunk := prefix + string(textRunes[:take])
+		chunks = append(chunks, fitWidth(chunk, width))
+		textRunes = textRunes[take:]
+	}
+}
+
+func runeWidth(r rune) int {
+	// lipgloss.Width on a single-rune string is the cheapest accurate path
+	// we have without pulling in another dep.
+	return lipgloss.Width(string(r))
 }
 
 // indexedPair keeps the original Line index so callers can recover a CodeRef.
@@ -360,69 +509,6 @@ func pairSideBySideWithIndex(lines []Line) []indexedPair {
 	return out
 }
 
-// plainHalfRow builds an ANSI-free half-row used in side-by-side mode.
-func plainHalfRow(ln *Line, colWidth int, isLeft bool) string {
-	if ln == nil {
-		return strings.Repeat(" ", colWidth)
-	}
-	var num int
-	if isLeft {
-		num = ln.OldNum
-	} else {
-		num = ln.NewNum
-	}
-	marker := " "
-	switch ln.Kind {
-	case LineAdd:
-		marker = "+"
-	case LineDel:
-		marker = "-"
-	case LineNoNewline:
-		marker = "\\"
-	}
-	prefix := fmt.Sprintf("%s %s ", formatLineNum(num), marker)
-	maxText := colWidth - lipgloss.Width(prefix)
-	if maxText < 1 {
-		maxText = 1
-	}
-	text := truncate(expandTabs(ln.Text), maxText)
-	return fitWidth(prefix+text, colWidth)
-}
-
-// fitWidth pads `s` to exactly `width` display cells. If `s` is already
-// wider it is hard-truncated (no ellipsis) so it can't wrap to the next
-// row in the viewport.
-func fitWidth(s string, width int) string {
-	w := lipgloss.Width(s)
-	if w == width {
-		return s
-	}
-	if w < width {
-		return s + strings.Repeat(" ", width-w)
-	}
-	// Hard cut to display width — protects against any prefix/measure mismatch.
-	runes := []rune(s)
-	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
-		runes = runes[:len(runes)-1]
-	}
-	return string(runes)
-}
-
-// capDisplay is fitWidth's truncate-only sibling: it never adds padding (so
-// it preserves trailing ANSI resets coming out of styled segments) but does
-// hard-cut content wider than `width`. Used for fully composed rows where
-// padding has already been baked into each half.
-func capDisplay(s string, width int) string {
-	if lipgloss.Width(s) <= width {
-		return s
-	}
-	runes := []rune(s)
-	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
-		runes = runes[:len(runes)-1]
-	}
-	return string(runes)
-}
-
 func appendMarker(line string, width int, marker string) string {
 	mWidth := lipgloss.Width(marker)
 	if lipgloss.Width(line)+mWidth+1 > width {
@@ -446,16 +532,32 @@ func expandTabs(s string) string {
 	return strings.ReplaceAll(s, "\t", "    ")
 }
 
-func truncate(s string, w int) string {
-	if lipgloss.Width(s) <= w {
+// fitWidth pads `s` to exactly `width` display cells. If `s` is already
+// wider it is hard-truncated (no ellipsis) so it can't wrap to the next
+// row in the viewport.
+func fitWidth(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w == width {
+		return s
+	}
+	if w < width {
+		return s + strings.Repeat(" ", width-w)
+	}
+	runes := []rune(s)
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+		runes = runes[:len(runes)-1]
+	}
+	return string(runes)
+}
+
+// capDisplay hard-cuts a string to at most `width` cells, never padding.
+func capDisplay(s string, width int) string {
+	if lipgloss.Width(s) <= width {
 		return s
 	}
 	runes := []rune(s)
-	for i := len(runes); i > 0; i-- {
-		candidate := string(runes[:i]) + "…"
-		if lipgloss.Width(candidate) <= w {
-			return candidate
-		}
+	for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
+		runes = runes[:len(runes)-1]
 	}
-	return ""
+	return string(runes)
 }
