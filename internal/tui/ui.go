@@ -24,6 +24,7 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/common"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branch"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branchsidebar"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/diffview"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/footer"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/issuessection"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/issueview"
@@ -63,6 +64,7 @@ type Model struct {
 	taskSpinner      spinner.Model
 	tasks            map[string]context.Task
 	positionOverride string // "" means no override, "right" or "bottom"
+	diffView         diffview.Model
 }
 
 func NewModel(location config.Location) Model {
@@ -98,6 +100,7 @@ func NewModel(location config.Location) Model {
 	m.branchSidebar = branchsidebar.NewModel(m.ctx)
 	m.notificationView = notificationview.NewModel(m.ctx)
 	m.tabs = tabs.NewModel(m.ctx)
+	m.diffView = diffview.NewModel(m.ctx)
 
 	return m
 }
@@ -180,6 +183,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		log.Info("Key pressed", "key", msg.String())
 		m.ctx.Error = nil
+
+		// In-app diff viewer captures keys while open.
+		if m.diffView.IsOpen {
+			switch {
+			case key.Matches(msg, keys.DiffKeys.Close):
+				m.diffView.Close()
+				return m, nil
+			case key.Matches(msg, keys.DiffKeys.ToggleMode):
+				m.diffView.ToggleMode()
+				return m, nil
+			}
+			m.diffView, cmd = m.diffView.Update(msg)
+			return m, cmd
+		}
 
 		if currSection != nil && (currSection.IsSearchFocused() ||
 			currSection.IsPromptConfirmationFocused()) {
@@ -566,8 +583,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 						case prview.PRActionDiff:
 							if pr := m.notificationView.GetSubjectPR(); pr != nil {
-								cmd = common.DiffPR(pr.GetNumber(), pr.GetRepoNameWithOwner(),
-									m.ctx.Config.GetFullScreenDiffPagerEnv())
+								cmd = func() tea.Msg {
+									return common.OpenDiffMsg{
+										PRNumber: pr.GetNumber(),
+										Repo:     pr.GetRepoNameWithOwner(),
+										Title:    pr.GetTitle(),
+									}
+								}
 							}
 							return m, cmd
 
@@ -864,6 +886,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case constants.ErrMsg:
 		m.ctx.Error = msg.Err
+
+	case common.OpenDiffMsg:
+		m.diffView.UpdateProgramContext(m.ctx)
+		cmds = append(cmds, m.diffView.Open(msg.PRNumber, msg.Repo, msg.Title))
+
+	case diffview.Loaded:
+		m.diffView.HandleLoaded(msg)
 	}
 
 	m.syncProgramContext()
@@ -993,6 +1022,10 @@ func (m Model) View() tea.View {
 		layers = append(layers, lipgloss.NewLayer(issueCmp).X(previewPos.X+3).Y(y))
 	}
 
+	if m.diffView.IsOpen {
+		layers = append(layers, lipgloss.NewLayer(m.diffView.View()).X(0).Y(0))
+	}
+
 	comp := lipgloss.NewCompositor(layers...)
 	v.SetContent(comp.Render())
 
@@ -1081,6 +1114,7 @@ func (m *Model) syncProgramContext() {
 	m.issueSidebar.UpdateProgramContext(m.ctx)
 	m.branchSidebar.UpdateProgramContext(m.ctx)
 	m.notificationView.UpdateProgramContext(m.ctx)
+	m.diffView.UpdateProgramContext(m.ctx)
 }
 
 func (m *Model) updateSection(id int, sType string, msg tea.Msg) (cmd tea.Cmd) {

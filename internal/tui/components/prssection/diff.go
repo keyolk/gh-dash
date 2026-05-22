@@ -12,9 +12,10 @@ func (m Model) diff() tea.Cmd {
 		return nil
 	}
 
-	return common.DiffPR(
-		currRowData.GetNumber(),
-		currRowData.GetRepoNameWithOwner(),
-		m.Ctx.Config.GetFullScreenDiffPagerEnv(),
-	)
+	msg := common.OpenDiffMsg{
+		PRNumber: currRowData.GetNumber(),
+		Repo:     currRowData.GetRepoNameWithOwner(),
+		Title:    currRowData.GetTitle(),
+	}
+	return func() tea.Msg { return msg }
 }
