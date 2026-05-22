@@ -43,6 +43,15 @@ type KeyMap struct {
 	PageUp                key.Binding
 	NextSection           key.Binding
 	PrevSection           key.Binding
+	GotoSection1          key.Binding
+	GotoSection2          key.Binding
+	GotoSection3          key.Binding
+	GotoSection4          key.Binding
+	GotoSection5          key.Binding
+	GotoSection6          key.Binding
+	GotoSection7          key.Binding
+	GotoSection8          key.Binding
+	GotoSection9          key.Binding
 	Search                key.Binding
 	CopyUrl               key.Binding
 	CopyNumber            key.Binding
@@ -189,6 +198,42 @@ var Keys = &KeyMap{
 		key.WithKeys("left", "h"),
 		key.WithHelp("󰁍/h", "previous section"),
 	),
+	GotoSection1: key.NewBinding(
+		key.WithKeys("1"),
+		key.WithHelp("1", "goto section 1"),
+	),
+	GotoSection2: key.NewBinding(
+		key.WithKeys("2"),
+		key.WithHelp("2", "goto section 2"),
+	),
+	GotoSection3: key.NewBinding(
+		key.WithKeys("3"),
+		key.WithHelp("3", "goto section 3"),
+	),
+	GotoSection4: key.NewBinding(
+		key.WithKeys("4"),
+		key.WithHelp("4", "goto section 4"),
+	),
+	GotoSection5: key.NewBinding(
+		key.WithKeys("5"),
+		key.WithHelp("5", "goto section 5"),
+	),
+	GotoSection6: key.NewBinding(
+		key.WithKeys("6"),
+		key.WithHelp("6", "goto section 6"),
+	),
+	GotoSection7: key.NewBinding(
+		key.WithKeys("7"),
+		key.WithHelp("7", "goto section 7"),
+	),
+	GotoSection8: key.NewBinding(
+		key.WithKeys("8"),
+		key.WithHelp("8", "goto section 8"),
+	),
+	GotoSection9: key.NewBinding(
+		key.WithKeys("9"),
+		key.WithHelp("9", "goto section 9"),
+	),
 	Search: key.NewBinding(
 		key.WithKeys("/"),
 		key.WithHelp("/", "search"),
@@ -302,6 +347,24 @@ func rebindUniversal(universal []config.Keybinding) error {
 			key = &Keys.NextSection
 		case "prevSection":
 			key = &Keys.PrevSection
+		case "gotoSection1":
+			key = &Keys.GotoSection1
+		case "gotoSection2":
+			key = &Keys.GotoSection2
+		case "gotoSection3":
+			key = &Keys.GotoSection3
+		case "gotoSection4":
+			key = &Keys.GotoSection4
+		case "gotoSection5":
+			key = &Keys.GotoSection5
+		case "gotoSection6":
+			key = &Keys.GotoSection6
+		case "gotoSection7":
+			key = &Keys.GotoSection7
+		case "gotoSection8":
+			key = &Keys.GotoSection8
+		case "gotoSection9":
+			key = &Keys.GotoSection9
 		case "search":
 			key = &Keys.Search
 		case "copyurl":

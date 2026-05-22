@@ -237,6 +237,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = m.onViewedRowChanged()
 			}
 
+		case key.Matches(msg, m.keys.GotoSection1),
+			key.Matches(msg, m.keys.GotoSection2),
+			key.Matches(msg, m.keys.GotoSection3),
+			key.Matches(msg, m.keys.GotoSection4),
+			key.Matches(msg, m.keys.GotoSection5),
+			key.Matches(msg, m.keys.GotoSection6),
+			key.Matches(msg, m.keys.GotoSection7),
+			key.Matches(msg, m.keys.GotoSection8),
+			key.Matches(msg, m.keys.GotoSection9):
+			if target := m.matchedSectionIndex(msg); target >= 0 {
+				if s := m.getSectionAt(target); s != nil {
+					m.setCurrSectionId(s.GetId())
+					cmd = m.onViewedRowChanged()
+				}
+			}
+
 		case key.Matches(msg, m.keys.Down):
 			if currSection != nil {
 				prevRow := currSection.CurrRow()

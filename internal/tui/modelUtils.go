@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/bubbles/v2/key"
 	"charm.land/lipgloss/v2"
 	log "charm.land/log/v2"
 
@@ -56,6 +57,28 @@ func (m *Model) getPrevSectionId() int {
 
 func (m *Model) getNextSectionId() int {
 	return min((m.currSectionId + 1), len(m.ctx.GetViewSectionsConfig())-1)
+}
+
+// matchedSectionIndex returns the zero-based section index that the given key
+// message maps to via the GotoSection1..9 bindings, or -1 if none match.
+func (m *Model) matchedSectionIndex(msg tea.KeyMsg) int {
+	bindings := []*key.Binding{
+		&m.keys.GotoSection1,
+		&m.keys.GotoSection2,
+		&m.keys.GotoSection3,
+		&m.keys.GotoSection4,
+		&m.keys.GotoSection5,
+		&m.keys.GotoSection6,
+		&m.keys.GotoSection7,
+		&m.keys.GotoSection8,
+		&m.keys.GotoSection9,
+	}
+	for i, b := range bindings {
+		if key.Matches(msg, *b) {
+			return i
+		}
+	}
+	return -1
 }
 
 type IssueCommandTemplateInput struct {
