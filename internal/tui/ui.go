@@ -207,6 +207,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, keys.DiffKeys.Comment):
 				m.diffView.StartComment()
 				return m, nil
+			case key.Matches(msg, keys.DiffReviewKeys.SubmitComment):
+				return m, m.diffView.SubmitReview("COMMENT", "")
+			case key.Matches(msg, keys.DiffReviewKeys.Approve):
+				return m, m.diffView.SubmitReview("APPROVE", "")
+			case key.Matches(msg, keys.DiffReviewKeys.RequestChange):
+				return m, m.diffView.SubmitReview("REQUEST_CHANGES", "")
 			case msg.String() == "esc":
 				// esc clears an active selection first, then closes.
 				if m.diffView.SelectionMode() != diffview.SelectNone {
@@ -918,6 +924,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case diffview.Loaded:
 		m.diffView.HandleLoaded(msg)
+
+	case diffview.CommentsFetched:
+		m.diffView.HandleCommentsFetched(msg)
+
+	case diffview.ReviewSubmitted:
+		if c := m.diffView.HandleReviewSubmitted(msg); c != nil {
+			cmds = append(cmds, c)
+		}
 	}
 
 	m.syncProgramContext()

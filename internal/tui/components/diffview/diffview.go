@@ -51,6 +51,9 @@ type Model struct {
 
 	pending []PendingComment
 	editor  commentEditor
+
+	// existing holds comments fetched from GitHub for this PR.
+	existing []ExistingComment
 }
 
 // NewModel constructs an empty diff viewer.
@@ -77,13 +80,19 @@ func (m *Model) Open(prNumber int, repo, title string) tea.Cmd {
 	m.codeRows = nil
 	m.cursorRow = -1
 	m.sel = Selection{}
+	m.pending = nil
+	m.existing = nil
 	if m.comments == nil {
 		m.comments = map[CodeRef]bool{}
+	} else {
+		for k := range m.comments {
+			delete(m.comments, k)
+		}
 	}
 	m.viewport.SetContent("")
 	m.viewport.GotoTop()
 
-	return func() tea.Msg {
+	loadDiff := func() tea.Msg {
 		out, err := exec.Command("gh", "pr", "diff", fmt.Sprint(prNumber), "-R", repo).Output()
 		if err != nil {
 			return Loaded{PRNumber: prNumber, Repo: repo, Err: err}
@@ -94,6 +103,7 @@ func (m *Model) Open(prNumber int, repo, title string) tea.Cmd {
 		}
 		return Loaded{PRNumber: prNumber, Repo: repo, Files: files}
 	}
+	return tea.Batch(loadDiff, fetchExistingComments(prNumber, repo))
 }
 
 // Close hides the diff viewer and clears its content.
@@ -259,6 +269,94 @@ func (m *Model) PendingComments() []PendingComment {
 	return out
 }
 
+// HandleCommentsFetched merges existing review comments into the viewer and
+// rerenders so the markers light up. Called by the top-level UI when a
+// CommentsFetched message arrives.
+func (m *Model) HandleCommentsFetched(msg CommentsFetched) {
+	if msg.PRNumber != m.PRNumber || msg.Repo != m.Repo {
+		return
+	}
+	if msg.Err != nil {
+		log.Warn("fetch existing comments failed", "pr", msg.PRNumber, "err", msg.Err)
+		return
+	}
+	m.existing = msg.Comments
+	m.applyExistingMarkers()
+	m.refreshViewport()
+}
+
+// applyExistingMarkers walks the rendered code rows and turns on the comment
+// marker for any row whose (path, line, side) matches an existing comment.
+func (m *Model) applyExistingMarkers() {
+	if len(m.existing) == 0 || len(m.doc.rows) == 0 {
+		return
+	}
+	for _, r := range m.doc.rows {
+		if r.kind != rowCode || r.ref == nil {
+			continue
+		}
+		for _, ec := range m.existing {
+			if ec.Path != r.ref.Path {
+				continue
+			}
+			if matchesLine(ec, *r.ref) {
+				m.comments[*r.ref] = true
+				break
+			}
+		}
+	}
+}
+
+func matchesLine(ec ExistingComment, ref CodeRef) bool {
+	// `line` always set; `start_line` set only for multi-line. We mark
+	// every code row falling in that range.
+	if ec.Side == "LEFT" {
+		if ref.Old == 0 {
+			return false
+		}
+		if ec.StartLine != 0 {
+			return ref.Old >= ec.StartLine && ref.Old <= ec.Line
+		}
+		return ref.Old == ec.Line
+	}
+	if ref.New == 0 {
+		return false
+	}
+	if ec.StartLine != 0 {
+		return ref.New >= ec.StartLine && ref.New <= ec.Line
+	}
+	return ref.New == ec.Line
+}
+
+// SubmitReview posts the pending comments as a single review.
+// event must be one of "COMMENT", "APPROVE", "REQUEST_CHANGES".
+func (m *Model) SubmitReview(event, body string) tea.Cmd {
+	if len(m.pending) == 0 && event == "COMMENT" && body == "" {
+		return nil
+	}
+	pending := make([]PendingComment, len(m.pending))
+	copy(pending, m.pending)
+	return submitReview(m.PRNumber, m.Repo, event, body, pending)
+}
+
+// HandleReviewSubmitted folds the result of a submitReview call back in.
+// On success the pending queue is cleared and existing comments are
+// re-fetched so the just-posted review shows up.
+func (m *Model) HandleReviewSubmitted(msg ReviewSubmitted) tea.Cmd {
+	if msg.PRNumber != m.PRNumber || msg.Repo != m.Repo {
+		return nil
+	}
+	if msg.Err != nil {
+		m.err = msg.Err
+		log.Warn("submit review failed", "pr", msg.PRNumber, "err", msg.Err)
+		m.refreshViewport()
+		return nil
+	}
+	m.pending = nil
+	// Re-fetch so freshly posted comments are visible.
+	return fetchExistingComments(m.PRNumber, m.Repo)
+}
+
 // ensureCursorVisible scrolls the viewport so the cursor row stays inside
 // the visible window.
 func (m *Model) ensureCursorVisible() {
@@ -373,6 +471,7 @@ func (m *Model) rebuild() {
 	if m.cursorRow < 0 && len(m.codeRows) > 0 {
 		m.cursorRow = m.codeRows[0]
 	}
+	m.applyExistingMarkers()
 	m.refreshViewport()
 }
 

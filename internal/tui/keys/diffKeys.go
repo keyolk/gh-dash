@@ -68,3 +68,26 @@ var DiffKeys = DiffKeyMap{
 		key.WithHelp("c", "comment on selection"),
 	),
 }
+
+// DiffReviewKeyMap collects review-submission keys. Kept separate so it is
+// easy to remap without touching the navigation set.
+type DiffReviewKeyMap struct {
+	SubmitComment key.Binding
+	Approve       key.Binding
+	RequestChange key.Binding
+}
+
+var DiffReviewKeys = DiffReviewKeyMap{
+	SubmitComment: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "submit review (comment)"),
+	),
+	Approve: key.NewBinding(
+		key.WithKeys("A"),
+		key.WithHelp("A", "submit review (approve)"),
+	),
+	RequestChange: key.NewBinding(
+		key.WithKeys("X"),
+		key.WithHelp("X", "submit review (request changes)"),
+	),
+}
