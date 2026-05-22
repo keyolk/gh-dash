@@ -186,9 +186,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// In-app diff viewer captures keys while open.
 		if m.diffView.IsOpen {
+			// When the comment editor is open we forward most keys to it and
+			// only intercept save/cancel.
+			if m.diffView.EditorActive() {
+				switch msg.String() {
+				case "ctrl+s":
+					m.diffView.SaveComment()
+					return m, nil
+				case "esc":
+					m.diffView.CancelComment()
+					return m, nil
+				}
+				m.diffView, cmd = m.diffView.Update(msg)
+				return m, cmd
+			}
 			switch {
 			case key.Matches(msg, keys.DiffKeys.ToggleMode):
 				m.diffView.ToggleMode()
+				return m, nil
+			case key.Matches(msg, keys.DiffKeys.Comment):
+				m.diffView.StartComment()
 				return m, nil
 			case msg.String() == "esc":
 				// esc clears an active selection first, then closes.
@@ -1032,6 +1049,9 @@ func (m Model) View() tea.View {
 
 	if m.diffView.IsOpen {
 		layers = append(layers, lipgloss.NewLayer(m.diffView.View()).X(0).Y(0))
+		if ed := m.diffView.EditorView(); ed != "" {
+			layers = append(layers, lipgloss.NewLayer(ed).X(0).Y(0))
+		}
 	}
 
 	comp := lipgloss.NewCompositor(layers...)

@@ -46,12 +46,11 @@ type Model struct {
 
 	cursorRow int
 	sel       Selection
-	// codeRows holds the indices of selectable code rows in doc.rows so
-	// cursor navigation can skip headers in O(1).
-	codeRows []int
-	// comments tracks which CodeRefs have a pending or fetched comment;
-	// values added in later phases. Kept here so render can show markers.
-	comments map[CodeRef]bool
+	codeRows  []int
+	comments  map[CodeRef]bool
+
+	pending []PendingComment
+	editor  commentEditor
 }
 
 // NewModel constructs an empty diff viewer.
@@ -61,6 +60,7 @@ func NewModel(ctx *context.ProgramContext) Model {
 		ctx:      ctx,
 		viewport: vp,
 		mode:     ModeSideBySide,
+		editor:   newCommentEditor(),
 	}
 }
 
@@ -158,6 +158,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !m.IsOpen {
 		return m, nil
 	}
+	if m.editor.active {
+		cmd := m.editor.update(msg)
+		return m, cmd
+	}
 	if km, ok := msg.(tea.KeyMsg); ok {
 		switch km.String() {
 		case "j", "down":
@@ -199,6 +203,60 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
+}
+
+// EditorActive reports whether the comment editor modal is open.
+func (m *Model) EditorActive() bool { return m.editor.active }
+
+// StartComment opens the comment editor against the current selection (or
+// just the cursor row if no selection is active).
+func (m *Model) StartComment() {
+	refs := m.SelectionRefs()
+	if len(refs) == 0 {
+		return
+	}
+	width, _ := m.size()
+	m.editor.open(refs, width)
+}
+
+// SaveComment finalises the editor into a PendingComment and refreshes
+// markers. Returns true when a comment was actually appended.
+func (m *Model) SaveComment() bool {
+	if !m.editor.active {
+		return false
+	}
+	body := m.editor.value()
+	if body == "" {
+		// empty body — treat as cancel
+		m.editor.cancel()
+		return false
+	}
+	pc := buildPending(m.editor.targets, body)
+	m.editor.cancel()
+	if pc.Path == "" {
+		return false
+	}
+	m.pending = append(m.pending, pc)
+	// mark every target ref so the comment marker shows up
+	for _, ref := range m.editor.targets {
+		m.comments[ref] = true
+	}
+	m.ClearSelection()
+	m.refreshViewport()
+	return true
+}
+
+// CancelComment discards the in-progress editor without saving.
+func (m *Model) CancelComment() {
+	m.editor.cancel()
+}
+
+// PendingComments returns a copy of the pending comments for inspection /
+// later submission.
+func (m *Model) PendingComments() []PendingComment {
+	out := make([]PendingComment, len(m.pending))
+	copy(out, m.pending)
+	return out
 }
 
 // ensureCursorVisible scrolls the viewport so the cursor row stays inside
@@ -243,8 +301,17 @@ func (m Model) View() string {
 					Render(fmt.Sprintf("error: %v", m.err))))
 	}
 	footer := m.footerView(width)
-
 	return style.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
+}
+
+// EditorView returns the editor overlay (or "" when inactive). The top-level
+// UI composes this as its own layer so it can sit above the diff frame.
+func (m Model) EditorView() string {
+	if !m.editor.active {
+		return ""
+	}
+	w, h := m.size()
+	return m.editor.view(w, h)
 }
 
 // MatchKey reports whether the given key string matches a binding by string
