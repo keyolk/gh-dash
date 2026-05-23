@@ -59,6 +59,10 @@ type Model struct {
 
 	// existing holds comments fetched from GitHub for this PR.
 	existing []ExistingComment
+
+	// activeFile is the index of the currently visible file in `files`.
+	// -1 means "show all files" (no tabs).
+	activeFile int
 }
 
 // NewModel constructs an empty diff viewer.
@@ -88,6 +92,7 @@ func (m *Model) Open(prNumber int, repo, title string) tea.Cmd {
 	m.sel = Selection{}
 	m.pending = nil
 	m.existing = nil
+	m.activeFile = 0
 	if m.comments == nil {
 		m.comments = map[CodeRef]bool{}
 	} else {
@@ -184,6 +189,48 @@ func (m *Model) ToggleHelp() {
 	m.refreshViewport()
 }
 
+// NextFile advances the active file tab; wraps to the first file at the end.
+func (m *Model) NextFile() {
+	if len(m.files) <= 1 {
+		return
+	}
+	m.activeFile = (m.activeFile + 1) % len(m.files)
+	m.cursorRow = -1
+	m.sel = Selection{}
+	m.rebuild()
+	m.viewport.GotoTop()
+}
+
+// PrevFile retreats the active file tab; wraps to the last file at the start.
+func (m *Model) PrevFile() {
+	if len(m.files) <= 1 {
+		return
+	}
+	m.activeFile = (m.activeFile - 1 + len(m.files)) % len(m.files)
+	m.cursorRow = -1
+	m.sel = Selection{}
+	m.rebuild()
+	m.viewport.GotoTop()
+}
+
+// SetActiveFile jumps directly to the file at `idx`.
+func (m *Model) SetActiveFile(idx int) {
+	if idx < 0 || idx >= len(m.files) || idx == m.activeFile {
+		return
+	}
+	m.activeFile = idx
+	m.cursorRow = -1
+	m.sel = Selection{}
+	m.rebuild()
+	m.viewport.GotoTop()
+}
+
+// ActiveFile returns the index of the currently visible file.
+func (m *Model) ActiveFile() int { return m.activeFile }
+
+// FileCount reports the total number of files in the diff.
+func (m *Model) FileCount() int { return len(m.files) }
+
 // UpdateProgramContext refreshes the viewport dimensions from the program context.
 func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 	if ctx == nil {
@@ -192,8 +239,11 @@ func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 	m.ctx = ctx
 	w, h := m.size()
 	m.viewport.SetWidth(w)
-	// reserve 1 row for header + 1 for footer
+	// reserve 1 row for header + 1 for footer + 1 for tab bar (if any)
 	bodyH := h - 2
+	if len(m.files) > 1 {
+		bodyH--
+	}
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -213,6 +263,13 @@ func (m *Model) HandleLoaded(msg Loaded) {
 		return
 	}
 	m.files = msg.Files
+	if m.activeFile < 0 || m.activeFile >= len(m.files) {
+		m.activeFile = 0
+	}
+	// Re-shrink the viewport so the new tab bar row, if any, has space.
+	if m.ctx != nil {
+		m.UpdateProgramContext(m.ctx)
+	}
 	m.rebuild()
 	m.viewport.GotoTop()
 }
@@ -277,6 +334,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		case "?":
 			m.ToggleHelp()
+			return m, nil
+		case "]", "}":
+			m.NextFile()
+			return m, nil
+		case "[", "{":
+			m.PrevFile()
 			return m, nil
 		}
 	}
@@ -470,9 +533,14 @@ func (m Model) View() string {
 	width, height := m.size()
 
 	header := m.headerView(width)
+	tabBar := m.tabBarView(width)
 	footer := m.footerView(width)
 
-	bodyHeight := height - 2 // 1 line header + 1 line footer
+	tabRows := 0
+	if tabBar != "" {
+		tabRows = 1
+	}
+	bodyHeight := height - 2 - tabRows
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
@@ -493,7 +561,118 @@ func (m Model) View() string {
 	// Solid black backdrop so we don't see the underlying main UI bleed
 	// through any short rows.
 	backdrop := lipgloss.NewStyle().Background(lipgloss.Color("0"))
-	return backdrop.Render(lipgloss.JoinVertical(lipgloss.Left, header, body, footer))
+	parts := []string{header}
+	if tabBar != "" {
+		parts = append(parts, tabBar)
+	}
+	parts = append(parts, body, footer)
+	return backdrop.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+}
+
+// tabBarView renders one row of file tabs. Empty string when there's at most
+// one file (no point in showing tabs).
+func (m Model) tabBarView(width int) string {
+	if len(m.files) <= 1 {
+		return ""
+	}
+	activeStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("12")).
+		Foreground(lipgloss.Color("0")).
+		Bold(true).
+		Padding(0, 1)
+	inactiveStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("250")).
+		Padding(0, 1)
+	pendingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+
+	// Build all tabs, then decide which window to show given the active file.
+	type tab struct {
+		idx    int
+		render string
+		w      int
+	}
+	tabs := make([]tab, 0, len(m.files))
+	for i, f := range m.files {
+		label := shortenPath(f.Path(), 30)
+		// Show a small dot when this file has pending or existing comments.
+		if m.fileHasCommentMarker(i) {
+			label = label + " " + pendingStyle.Render("●")
+		}
+		var rendered string
+		if i == m.activeFile {
+			rendered = activeStyle.Render(label)
+		} else {
+			rendered = inactiveStyle.Render(fmt.Sprintf("%d %s", i+1, label))
+		}
+		tabs = append(tabs, tab{idx: i, render: rendered, w: lipgloss.Width(rendered)})
+	}
+
+	// Slide a window over the tabs so the active one is always visible.
+	start := 0
+	end := len(tabs)
+	total := 0
+	for _, t := range tabs {
+		total += t.w
+	}
+	if total > width {
+		// Find a start such that the active tab fits inside [start..end] within width.
+		used := tabs[m.activeFile].w
+		start = m.activeFile
+		end = m.activeFile + 1
+		for end < len(tabs) && used+tabs[end].w <= width {
+			used += tabs[end].w
+			end++
+		}
+		for start > 0 && used+tabs[start-1].w <= width {
+			used += tabs[start-1].w
+			start--
+		}
+	}
+
+	var b strings.Builder
+	if start > 0 {
+		b.WriteString(inactiveStyle.Render("‹"))
+	}
+	for i := start; i < end; i++ {
+		b.WriteString(tabs[i].render)
+	}
+	if end < len(tabs) {
+		b.WriteString(inactiveStyle.Render("›"))
+	}
+	return capDisplay(b.String(), width-1)
+}
+
+// fileHasCommentMarker reports whether file `idx` has any pending or
+// existing review comments.
+func (m Model) fileHasCommentMarker(idx int) bool {
+	if idx < 0 || idx >= len(m.files) {
+		return false
+	}
+	path := m.files[idx].Path()
+	for _, p := range m.pending {
+		if p.Path == path {
+			return true
+		}
+	}
+	for _, c := range m.existing {
+		if c.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func shortenPath(p string, max int) string {
+	if lipgloss.Width(p) <= max {
+		return p
+	}
+	// keep the last `max-1` chars, prefix with …
+	runes := []rune(p)
+	for len(runes) > 1 && lipgloss.Width("…"+string(runes)) > max {
+		runes = runes[1:]
+	}
+	return "…" + string(runes)
 }
 
 // HelpView returns the help overlay (or "" when hidden). Composed by the
@@ -514,6 +693,7 @@ func (m Model) HelpView() string {
 		{"ctrl+d / ctrl+u", "half-page down / up"},
 		{"tab", "toggle inline / side-by-side"},
 		{"h / l (←/→)", "switch active side (side-by-side)"},
+		{"[ / ]", "previous / next file tab"},
 		{"V", "visual-line selection"},
 		{"ctrl+v", "visual-block selection"},
 		{"esc", "clear selection (then close)"},
@@ -621,9 +801,9 @@ func (m Model) headerView(width int) string {
 }
 
 func (m Model) footerView(width int) string {
-	hints := " j/k cursor · h/l side · V/⌃V select · c comment · R/A/X submit · tab mode · ? help · q close "
+	hints := " j/k cursor · h/l side · [ ] file · V/⌃V select · c comment · R/A/X submit · tab mode · ? help · q close "
 	if lipgloss.Width(hints) > width {
-		hints = " c: comment · R: submit · ?: help · q: close "
+		hints = " [ ] file · c comment · R submit · ? help · q close "
 	}
 	return capDisplay(lipgloss.NewStyle().Faint(true).Render(hints), width-1)
 }
@@ -633,7 +813,13 @@ func (m *Model) rebuild() {
 		return
 	}
 	width, _ := m.size()
-	m.doc = buildDoc(m.files, width, m.mode)
+	// Always render a single active file when files exist. activeFile defaults
+	// to 0 on Open() and is updated by NextFile / PrevFile / SetActiveFile.
+	visible := m.activeFile
+	if visible < 0 || visible >= len(m.files) {
+		visible = -1 // fall back to whole-diff render
+	}
+	m.doc = buildDoc(m.files, visible, width, m.mode)
 	m.codeRows = m.codeRows[:0]
 	for i, r := range m.doc.rows {
 		if r.kind == rowCode {

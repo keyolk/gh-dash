@@ -69,8 +69,12 @@ type renderedDoc struct {
 	colWidth int
 }
 
-// buildDoc lays out the diff into rows + per-half metadata.
-func buildDoc(files []File, width int, mode Mode) renderedDoc {
+// buildDoc lays out the diff into rows + per-half metadata. When
+// visibleFile is >= 0 only that file is included in the rendered doc, but
+// the original file index is still carried on every CodeRef so existing
+// comments / pending comments keyed by ref remain stable across file
+// switches.
+func buildDoc(files []File, visibleFile int, width int, mode Mode) renderedDoc {
 	doc := renderedDoc{mode: mode, width: width}
 	if mode == ModeSideBySide {
 		// Reserve 1 cell for the divider; split the remainder evenly. If
@@ -83,6 +87,9 @@ func buildDoc(files []File, width int, mode Mode) renderedDoc {
 	}
 
 	for fi, f := range files {
+		if visibleFile >= 0 && fi != visibleFile {
+			continue
+		}
 		doc.rows = append(doc.rows, row{
 			kind:       rowFileHeader,
 			headerText: fileHdrStyle.Render(fmt.Sprintf("▸ %s", f.Path())),
@@ -340,11 +347,11 @@ func (d renderedDoc) visualHeight(i int) int {
 // renderInline / renderSideBySide are kept as the public entry points for
 // non-stateful rendering (tests, snapshots).
 func renderInline(files []File, width int) string {
-	return buildDoc(files, width, ModeInline).stringify(Selection{}, -1, SideRight, nil)
+	return buildDoc(files, -1, width, ModeInline).stringify(Selection{}, -1, SideRight, nil)
 }
 
 func renderSideBySide(files []File, width int) string {
-	return buildDoc(files, width, ModeSideBySide).stringify(Selection{}, -1, SideRight, nil)
+	return buildDoc(files, -1, width, ModeSideBySide).stringify(Selection{}, -1, SideRight, nil)
 }
 
 // buildInlineChunks slices an inline-mode line into colWidth-cell chunks,
