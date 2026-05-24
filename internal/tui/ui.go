@@ -1067,6 +1067,10 @@ func (m Model) View() tea.View {
 			hx, hy := m.diffView.HelpPosition()
 			layers = append(layers, lipgloss.NewLayer(hv).X(hx).Y(hy))
 		}
+		if sv := m.diffView.SearchView(); sv != "" {
+			sx, sy := m.diffView.SearchPosition()
+			layers = append(layers, lipgloss.NewLayer(sv).X(sx).Y(sy))
+		}
 		if ed := m.diffView.EditorView(); ed != "" {
 			ex, ey := m.diffView.EditorPosition()
 			layers = append(layers, lipgloss.NewLayer(ed).X(ex).Y(ey))

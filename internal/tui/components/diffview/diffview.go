@@ -63,6 +63,8 @@ type Model struct {
 	// activeFile is the index of the currently visible file in `files`.
 	// -1 means "show all files" (no tabs).
 	activeFile int
+
+	search searchUI
 }
 
 // NewModel constructs an empty diff viewer.
@@ -74,6 +76,7 @@ func NewModel(ctx *context.ProgramContext) Model {
 		viewport: vp,
 		mode:     ModeSideBySide,
 		editor:   newCommentEditor(),
+		search:   newSearchUI(),
 	}
 }
 
@@ -231,6 +234,65 @@ func (m *Model) ActiveFile() int { return m.activeFile }
 // FileCount reports the total number of files in the diff.
 func (m *Model) FileCount() int { return len(m.files) }
 
+// currentHit returns the highlighted search hit, or nil when search is
+// closed or empty.
+func (m *Model) currentHit() *searchHit {
+	if !m.search.active || len(m.search.hits) == 0 {
+		return nil
+	}
+	if m.search.selected < 0 || m.search.selected >= len(m.search.hits) {
+		return nil
+	}
+	h := m.search.hits[m.search.selected]
+	return &h
+}
+
+// jumpToHit switches to the target file and positions the cursor at the
+// matching code line (or the first code line of the hunk / file).
+func (m *Model) jumpToHit(h searchHit) {
+	if h.fileIdx < 0 || h.fileIdx >= len(m.files) {
+		return
+	}
+	if h.fileIdx != m.activeFile {
+		m.activeFile = h.fileIdx
+		m.cursorRow = -1
+		m.sel = Selection{}
+		m.rebuild()
+	}
+	// Find a doc row matching the hunk / line index.
+	target := -1
+	for i, r := range m.doc.rows {
+		if r.kind != rowCode || r.ref == nil {
+			continue
+		}
+		ref := *r.ref
+		if ref.FileIndex != h.fileIdx {
+			continue
+		}
+		if h.hunkIdx >= 0 && ref.HunkIndex != h.hunkIdx {
+			continue
+		}
+		if h.lineIdx >= 0 && ref.LineIndex != h.lineIdx {
+			continue
+		}
+		target = i
+		break
+	}
+	if target < 0 {
+		// fall back to first code row in the file
+		if len(m.codeRows) > 0 {
+			target = m.codeRows[0]
+		}
+	}
+	if target >= 0 {
+		m.cursorRow = target
+		if m.sel.Mode != SelectNone {
+			m.sel.CursorRow = m.cursorRow
+		}
+		m.ensureCursorVisible()
+	}
+}
+
 // UpdateProgramContext refreshes the viewport dimensions from the program context.
 func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 	if ctx == nil {
@@ -286,8 +348,43 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		cmd := m.editor.update(msg)
 		return m, cmd
 	}
+	if m.search.active {
+		if km, ok := msg.(tea.KeyMsg); ok {
+			switch km.String() {
+			case "esc":
+				m.search.cancel()
+				m.refreshViewport()
+				return m, nil
+			case "enter":
+				if hit := m.currentHit(); hit != nil {
+					m.jumpToHit(*hit)
+				}
+				m.search.cancel()
+				m.refreshViewport()
+				return m, nil
+			case "up", "ctrl+p":
+				m.search.selected--
+				m.search.clampSelection()
+				return m, nil
+			case "down", "ctrl+n":
+				m.search.selected++
+				m.search.clampSelection()
+				return m, nil
+			}
+		}
+		prev := m.search.input.Value()
+		cmd := m.search.update(msg)
+		if m.search.input.Value() != prev {
+			m.search.runSearch(m.files)
+		}
+		return m, cmd
+	}
 	if km, ok := msg.(tea.KeyMsg); ok {
 		switch km.String() {
+		case "/":
+			width, _ := m.size()
+			m.search.open(width)
+			return m, nil
 		case "j", "down":
 			m.moveCursor(1)
 			m.ensureCursorVisible()
@@ -694,6 +791,7 @@ func (m Model) HelpView() string {
 		{"tab", "toggle inline / side-by-side"},
 		{"h / l (←/→)", "switch active side (side-by-side)"},
 		{"[ / ]", "previous / next file tab"},
+		{"/", "search files, hunks, code"},
 		{"V", "visual-line selection"},
 		{"ctrl+v", "visual-block selection"},
 		{"esc", "clear selection (then close)"},
@@ -755,6 +853,36 @@ func (m Model) EditorPosition() (int, int) {
 	return x, y
 }
 
+// SearchView returns the search modal (or "" when not open).
+func (m Model) SearchView() string {
+	if !m.search.active {
+		return ""
+	}
+	w, _ := m.size()
+	maxW := min(100, w-6)
+	maxResults := 10
+	if h := m.searchHeightBudget(); h-7 > 0 {
+		maxResults = h - 7
+	}
+	return m.search.view(maxW, maxResults)
+}
+
+// SearchPosition reports where SearchView should be drawn.
+func (m Model) SearchPosition() (int, int) {
+	w, _ := m.size()
+	bw := min(100, w-6)
+	// Anchor near the top so the input field is comfortable to read.
+	return max(0, (w-bw)/2 - 2), 2
+}
+
+func (m Model) searchHeightBudget() int {
+	_, h := m.size()
+	if h-6 < 6 {
+		return 6
+	}
+	return h - 6
+}
+
 // MatchKey reports whether the given key string matches a binding by string
 // comparison, falling back to Matches for chord forms. Kept tiny so callers
 // don't need to import bubbles/key here.
@@ -801,9 +929,9 @@ func (m Model) headerView(width int) string {
 }
 
 func (m Model) footerView(width int) string {
-	hints := " j/k cursor · h/l side · [ ] file · V/⌃V select · c comment · R/A/X submit · tab mode · ? help · q close "
+	hints := " j/k cursor · h/l side · [ ] file · / search · V/⌃V select · c comment · R/A/X submit · tab mode · ? help · q close "
 	if lipgloss.Width(hints) > width {
-		hints = " [ ] file · c comment · R submit · ? help · q close "
+		hints = " / search · [ ] file · c comment · R submit · ? help · q close "
 	}
 	return capDisplay(lipgloss.NewStyle().Faint(true).Render(hints), width-1)
 }
