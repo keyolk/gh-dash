@@ -59,6 +59,21 @@ func (m *Model) getNextSectionId() int {
 	return min((m.currSectionId + 1), len(m.ctx.GetViewSectionsConfig())-1)
 }
 
+// isScrollKey reports whether a key string is a pure viewport-scroll
+// shortcut. The full-screen PR detail mode uses this to avoid re-rendering
+// (and re-running Glamour over every comment in) the entire PR view on
+// every keystroke during scroll.
+func isScrollKey(k string) bool {
+	switch k {
+	case "j", "down", "k", "up",
+		"g", "home", "G", "end",
+		"ctrl+d", "ctrl+u",
+		"pgdown", "pgup":
+		return true
+	}
+	return false
+}
+
 // matchedSectionIndex returns the zero-based section index that the given key
 // message maps to via the GotoSection1..9 bindings, or -1 if none match.
 func (m *Model) matchedSectionIndex(msg tea.KeyMsg) int {

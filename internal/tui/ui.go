@@ -260,6 +260,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncProgramContext()
 				return m, nil
 			}
+			// Pure scroll keys: just nudge the viewport. Re-rendering the
+			// entire PR view (Glamour-rendered markdown for every comment)
+			// on each keystroke makes scrolling crawl on PRs with many
+			// comments, and the scroll itself doesn't change the rendered
+			// content at all.
+			if isScrollKey(msg.String()) {
+				var sideCmd tea.Cmd
+				m.sidebar, sideCmd = m.sidebar.Update(msg)
+				return m, sideCmd
+			}
 			// Route the key to both: prView handles tab switching / actions,
 			// sidebar owns the viewport that actually scrolls the rendered
 			// content.
@@ -1061,11 +1071,35 @@ func (m Model) View() tea.View {
 	// owns the j/k / pgup / pgdn scroll behaviour.
 	if m.prDetailFullscreen {
 		body := m.sidebar.View()
-		header := lipgloss.NewStyle().Bold(true).
-			Render(" PR detail · esc/q to back to list ")
+
+		// Title bar shows repo / PR number / title so the user can tell
+		// which PR they're inside without scrolling to the top.
+		titleBar := ""
+		if pr := m.getCurrRowData(); pr != nil {
+			repo := ""
+			if r, ok := pr.(interface{ GetRepoNameWithOwner() string }); ok {
+				repo = r.GetRepoNameWithOwner()
+			}
+			number := pr.GetNumber()
+			title := pr.GetTitle()
+			titleBar = lipgloss.NewStyle().Bold(true).
+				Background(lipgloss.Color("12")).
+				Foreground(lipgloss.Color("0")).
+				Width(m.ctx.ScreenWidth).
+				Padding(0, 1).
+				Render(fmt.Sprintf(" %s #%d · %s", repo, number, title))
+		}
+
+		modeBadge := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("12")).Bold(true).
+			Render("PR DETAIL")
 		hint := lipgloss.NewStyle().Faint(true).
-			Render(" j/k or ↑/↓ scroll · ctrl-d/u half page · [/] tabs · T expand · U retry · esc/q back ")
-		full := lipgloss.JoinVertical(lipgloss.Left, header, body, hint)
+			Render(" j/k scroll · ctrl-d/u page · [/] tabs · T expand · U retry · esc/q back ")
+		footer := lipgloss.NewStyle().
+			Width(m.ctx.ScreenWidth).
+			Render(modeBadge + "  " + hint)
+
+		full := lipgloss.JoinVertical(lipgloss.Left, titleBar, body, footer)
 		v.SetContent(lipgloss.NewStyle().
 			Width(m.ctx.ScreenWidth).
 			Height(m.ctx.ScreenHeight).
