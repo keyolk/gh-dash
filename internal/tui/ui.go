@@ -1327,16 +1327,17 @@ func (m *Model) getBaseContentHeight() int {
 func (m *Model) syncMainContentDimensions() {
 	m.ctx.PreviewPosition = m.resolvePreviewPosition()
 
-	// Full-screen PR detail uses the entire screen: no list pane, no
-	// sidebar split. We still mark the sidebar as "open" because the PR
-	// view component reads its dimensions from the sidebar context.
+	// Full-screen PR detail uses the entire screen for the sidebar /
+	// PR view. We pretend there is no preview pane and let the sidebar
+	// component pick its size up from MainContentHeight, leaving room
+	// for our own header + footer rows (2 lines total).
 	if m.prDetailFullscreen {
 		m.ctx.SidebarOpen = true
 		m.ctx.PreviewPosition = "right"
-		m.ctx.MainContentWidth = 0
-		m.ctx.MainContentHeight = 0
+		m.ctx.MainContentWidth = m.ctx.ScreenWidth
+		m.ctx.MainContentHeight = max(1, m.getBaseContentHeight()-2)
 		m.ctx.DynamicPreviewWidth = m.ctx.ScreenWidth
-		m.ctx.DynamicPreviewHeight = m.getBaseContentHeight()
+		m.ctx.DynamicPreviewHeight = 0
 		return
 	}
 
