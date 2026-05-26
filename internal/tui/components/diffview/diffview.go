@@ -482,7 +482,7 @@ func (m *Model) SaveComment() bool {
 		m.comments[ref] = true
 	}
 	m.ClearSelection()
-	m.refreshViewport()
+	m.rebuild()
 	return true
 }
 
@@ -511,8 +511,7 @@ func (m *Model) HandleCommentsFetched(msg CommentsFetched) {
 		return
 	}
 	m.existing = msg.Comments
-	m.applyExistingMarkers()
-	m.refreshViewport()
+	m.rebuild()
 }
 
 // applyExistingMarkers walks the rendered code rows and turns on the comment
@@ -948,6 +947,8 @@ func (m *Model) rebuild() {
 		visible = -1 // fall back to whole-diff render
 	}
 	m.doc = buildDoc(m.files, visible, width, m.mode)
+	m.applyExistingMarkers()
+	m.insertCommentRows()
 	m.codeRows = m.codeRows[:0]
 	for i, r := range m.doc.rows {
 		if r.kind == rowCode {
@@ -957,8 +958,86 @@ func (m *Model) rebuild() {
 	if m.cursorRow < 0 && len(m.codeRows) > 0 {
 		m.cursorRow = m.codeRows[0]
 	}
-	m.applyExistingMarkers()
 	m.refreshViewport()
+}
+
+// insertCommentRows splices comment rows underneath each code line they
+// belong to. Existing comments (from GitHub) and pending local comments
+// are interleaved — pending ones are tagged so they're visually distinct.
+func (m *Model) insertCommentRows() {
+	if len(m.doc.rows) == 0 {
+		return
+	}
+	width := m.doc.width
+	colW := width
+	if m.doc.mode == ModeSideBySide {
+		colW = m.doc.colWidth*2 + 1
+	}
+	if colW < 20 {
+		colW = 20
+	}
+
+	var out []row
+	for _, r := range m.doc.rows {
+		out = append(out, r)
+		if r.kind != rowCode || r.ref == nil {
+			continue
+		}
+		ref := *r.ref
+		// Collect comments anchored to this exact code row.
+		for _, ec := range m.existing {
+			if ec.Path != ref.Path {
+				continue
+			}
+			if !commentAnchorsHere(ec, ref) {
+				continue
+			}
+			author := ec.User.Login
+			if author == "" {
+				author = "unknown"
+			}
+			out = append(out, buildCommentRow(author, "", ec.Body, colW))
+		}
+		for _, pc := range m.pending {
+			if pc.Path != ref.Path {
+				continue
+			}
+			if !pendingAnchorsHere(pc, ref) {
+				continue
+			}
+			out = append(out, buildCommentRow("you", "pending", pc.Body, colW))
+		}
+	}
+	m.doc.rows = out
+}
+
+// commentAnchorsHere reports whether an existing comment's range covers
+// only the ref row. We only attach a comment to one row (the last one in
+// its range) so we don't duplicate the block on every covered line.
+func commentAnchorsHere(ec ExistingComment, ref CodeRef) bool {
+	if ec.Side == "LEFT" {
+		if ref.Old == 0 {
+			return false
+		}
+		return ref.Old == ec.Line
+	}
+	if ref.New == 0 {
+		return false
+	}
+	return ref.New == ec.Line
+}
+
+func pendingAnchorsHere(pc PendingComment, ref CodeRef) bool {
+	if pc.Side == "LEFT" {
+		if ref.Old == 0 {
+			return false
+		}
+		return ref.Old == pc.Line
+	}
+	if ref.New == 0 {
+		return false
+	}
+	return ref.New == pc.Line
 }
 
 // refreshViewport rerenders the (already laid-out) doc with the current

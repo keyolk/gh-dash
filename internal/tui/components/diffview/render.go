@@ -36,6 +36,7 @@ const (
 	rowFileHeader rowKind = iota
 	rowHunkHeader
 	rowCode
+	rowComment
 )
 
 // row is one displayable diff line. For code rows we store plain (ANSI-free)
@@ -214,6 +215,9 @@ func (d renderedDoc) stringify(sel Selection, cursorRow int, activeSide Side, co
 	var b strings.Builder
 	for i, r := range d.rows {
 		if r.kind != rowCode {
+			// rowFileHeader / rowHunkHeader / rowComment all render as a
+			// pre-styled single line (the headerText slot stores the full
+			// content, possibly multi-line for comments).
 			b.WriteString(r.headerText)
 			b.WriteString("\n")
 			continue
@@ -318,14 +322,16 @@ func pickChunk(chunks []string, i, w int) string {
 }
 
 // visualHeight returns the number of physical viewport rows that logical
-// row `i` occupies after wrapping. Non-code rows always take one row.
+// row `i` occupies after wrapping. Non-code rows count newlines inside
+// headerText (so multi-line comment blocks scroll correctly).
 func (d renderedDoc) visualHeight(i int) int {
 	if i < 0 || i >= len(d.rows) {
 		return 0
 	}
 	r := d.rows[i]
 	if r.kind != rowCode {
-		return 1
+		// at least 1 line; +1 for every embedded newline.
+		return 1 + strings.Count(r.headerText, "\n")
 	}
 	if d.mode == ModeSideBySide {
 		n := len(r.leftChunks)
@@ -344,8 +350,64 @@ func (d renderedDoc) visualHeight(i int) int {
 	return n
 }
 
-// renderInline / renderSideBySide are kept as the public entry points for
-// non-stateful rendering (tests, snapshots).
+// buildCommentRow returns a non-code row that displays `body` underneath
+// a code line. The body is wrapped to `width` and prefixed with a thin bar
+// + author / state label so it visually attaches to the line above.
+func buildCommentRow(author, state, body string, width int) row {
+	if width < 20 {
+		width = 20
+	}
+	barStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	headStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	tagStyle := lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("13"))
+	bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+
+	tag := ""
+	if state != "" {
+		tag = " " + tagStyle.Render("["+state+"]")
+	}
+	head := barStyle.Render("┃ ") + headStyle.Render(author) + tag
+
+	// Wrap body lines. Each body chunk gets the same left bar so the block
+	// reads as one comment.
+	indent := barStyle.Render("┃ ")
+	indentW := lipgloss.Width(indent)
+	room := width - indentW
+	if room < 10 {
+		room = 10
+	}
+
+	var lines []string
+	lines = append(lines, head)
+	for _, raw := range strings.Split(body, "\n") {
+		if raw == "" {
+			lines = append(lines, indent)
+			continue
+		}
+		runes := []rune(expandTabs(raw))
+		for len(runes) > 0 {
+			take := 0
+			acc := 0
+			for take < len(runes) {
+				w := runeWidth(runes[take])
+				if acc+w > room {
+					break
+				}
+				acc += w
+				take++
+			}
+			if take == 0 {
+				take = 1
+			}
+			lines = append(lines, indent+bodyStyle.Render(string(runes[:take])))
+			runes = runes[take:]
+		}
+	}
+	return row{
+		kind:       rowComment,
+		headerText: strings.Join(lines, "\n"),
+	}
+}
 func renderInline(files []File, width int) string {
 	return buildDoc(files, -1, width, ModeInline).stringify(Selection{}, -1, SideRight, nil)
 }
