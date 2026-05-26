@@ -208,11 +208,15 @@ func (m *Model) toggleThreadExpansion() {
 // the next View() refreshes the highlight; the parent UI is responsible
 // for scrolling the surrounding viewport.
 func (m *Model) moveActivityCursor(forward bool) {
+	// Anchors are populated as a side effect of rendering the Activity tab.
+	// On the very first n/N press (before the tab has been rendered while
+	// focused) the slice can be empty, so build it once up front.
+	if len(m.activityAnchors) == 0 {
+		_ = m.renderActivity()
+	}
 	n := len(m.activityAnchors)
 	if n == 0 {
-		// No anchors yet — the Activity tab hasn't been rendered. Seed at
-		// the first slot so the next render places the cursor there.
-		m.activityCursor = 0
+		m.activityCursor = -1
 		return
 	}
 	if m.activityCursor < 0 {
@@ -253,17 +257,21 @@ func (m *Model) toggleActivityFold() {
 	}
 }
 
-// ActivityCursorLine returns the line offset (inside the Activity body)
-// where the currently-selected activity starts, or -1 when nothing is
-// selected. The parent UI uses this to scroll its surrounding viewport.
+// ActivityCursorLine returns the line offset (inside the rendered PR view,
+// i.e. including the header rows above the Activity body) where the
+// currently-selected activity starts, or -1 when nothing is selected. The
+// parent UI uses this to scroll its surrounding viewport.
 func (m *Model) ActivityCursorLine() int {
 	if m.activityCursor < 0 || m.activityCursor >= len(m.activityAnchors) {
 		return -1
 	}
-	return m.activityAnchors[m.activityCursor].Line
+	// The viewport content is viewHeader() + the Activity body, so offset
+	// the body-relative anchor by the header height.
+	headerLines := strings.Count(m.viewHeader(), "\n") + 1
+	return headerLines + m.activityAnchors[m.activityCursor].Line
 }
 
-func (m Model) View() string {
+func (m *Model) View() string {
 	if !m.hasData() {
 		return ""
 	}
