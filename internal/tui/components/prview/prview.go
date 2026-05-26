@@ -40,6 +40,10 @@ type Model struct {
 	carousel        carousel.Model
 	editor          cmpcontroller.Controller
 	summaryViewMore bool
+	// expandedThreads tracks review-thread IDs the user has opted to
+	// expand (collapsed / resolved / outdated threads stay summarised
+	// otherwise to keep the activity tab snappy).
+	expandedThreads map[string]bool
 }
 
 var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
@@ -54,9 +58,10 @@ func NewModel(ctx *context.ProgramContext) Model {
 	cmp := cmpcontroller.New(ctx, inputbox.ModelOpts{TextArea: &ta})
 
 	return Model{
-		pr:       nil,
-		carousel: c,
-		editor:   cmp,
+		pr:              nil,
+		carousel:        c,
+		editor:          cmp,
+		expandedThreads: map[string]bool{},
 	}
 }
 
@@ -121,9 +126,55 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(keyMsg, keys.PRKeys.NextSidebarTab):
 			m.carousel.MoveRight()
 		}
+		// Activity-tab specific: `T` toggles expansion of collapsed
+		// (resolved / outdated) review threads.
+		if keyMsg.String() == "T" && m.carousel.Cursor() == 1 {
+			m.toggleThreadExpansion()
+		}
 	}
 
 	return m, cmd
+}
+
+// toggleThreadExpansion flips the expansion state for all folded review
+// threads on the current PR. When any folded thread is collapsed we expand
+// them all; when all are already expanded we collapse them again.
+func (m *Model) toggleThreadExpansion() {
+	if m.pr == nil || !m.pr.Data.IsEnriched {
+		return
+	}
+	if m.expandedThreads == nil {
+		m.expandedThreads = map[string]bool{}
+	}
+	allExpanded := true
+	hasFolded := false
+	for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
+		if !(t.IsResolved || t.IsCollapsed || t.IsOutdated) {
+			continue
+		}
+		hasFolded = true
+		if !m.expandedThreads[t.Id] {
+			allExpanded = false
+			break
+		}
+	}
+	if !hasFolded {
+		return
+	}
+	if allExpanded {
+		// Collapse all folded threads.
+		for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
+			if t.IsResolved || t.IsCollapsed || t.IsOutdated {
+				delete(m.expandedThreads, t.Id)
+			}
+		}
+		return
+	}
+	for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
+		if t.IsResolved || t.IsCollapsed || t.IsOutdated {
+			m.expandedThreads[t.Id] = true
+		}
+	}
 }
 
 func (m Model) View() string {

@@ -285,6 +285,8 @@ type ReviewThreadsWithComments struct {
 	Nodes []struct {
 		Id           string
 		IsOutdated   bool
+		IsResolved   bool
+		IsCollapsed  bool
 		OriginalLine int
 		StartLine    int
 		Line         int

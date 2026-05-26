@@ -3,6 +3,7 @@ package prview
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"charm.land/glamour/v2"
@@ -50,10 +51,42 @@ func (m *Model) renderActivity() string {
 		return bodyStyle.Render(lipgloss.JoinVertical(lipgloss.Left, partial...))
 	}
 
-	for _, review := range m.pr.Data.Enriched.ReviewThreads.Nodes {
-		path := review.Path
-		line := review.Line
-		for _, c := range review.Comments.Nodes {
+	for _, thread := range m.pr.Data.Enriched.ReviewThreads.Nodes {
+		// Collapsed / resolved / outdated threads are usually noise — show a
+		// one-line summary and skip rendering their bodies unless the user
+		// explicitly expands the thread. This keeps the activity tab fast
+		// on long-running PRs with lots of resolved review threads.
+		folded := thread.IsResolved || thread.IsCollapsed || thread.IsOutdated
+		if folded && !m.expandedThreads[thread.Id] {
+			n := len(thread.Comments.Nodes)
+			if n == 0 {
+				continue
+			}
+			latest := thread.Comments.Nodes[n-1]
+			tag := "collapsed"
+			switch {
+			case thread.IsResolved:
+				tag = "resolved"
+			case thread.IsOutdated:
+				tag = "outdated"
+			}
+			snippet := strings.SplitN(strings.TrimSpace(latest.Body), "\n", 2)[0]
+			if len(snippet) > 80 {
+				snippet = snippet[:79] + "…"
+			}
+			summary := lipgloss.NewStyle().Faint(true).Render(
+				fmt.Sprintf("▸ %s [%d msgs] %s:%d  %s — %s",
+					tag, n, thread.Path, thread.Line, latest.Author.Login, snippet),
+			)
+			activities = append(activities, RenderedActivity{
+				UpdatedAt:      latest.UpdatedAt,
+				RenderedString: summary,
+			})
+			continue
+		}
+		path := thread.Path
+		line := thread.Line
+		for _, c := range thread.Comments.Nodes {
 			comments = append(comments, comment{
 				Author:    c.Author.Login,
 				Body:      c.Body,
@@ -106,8 +139,21 @@ func (m *Model) renderActivity() string {
 		for _, activity := range activities {
 			renderedActivities = append(renderedActivities, activity.RenderedString)
 		}
-		title := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(
-			fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities)))
+		// Count folded threads so we can hint at `T` to expand them.
+		var folded int
+		for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
+			if t.IsResolved || t.IsCollapsed || t.IsOutdated {
+				if !m.expandedThreads[t.Id] {
+					folded++
+				}
+			}
+		}
+		titleText := fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities))
+		if folded > 0 {
+			titleText += "  " + lipgloss.NewStyle().Faint(true).
+				Render(fmt.Sprintf("· %d folded (press T to expand)", folded))
+		}
+		title := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(titleText)
 		body = lipgloss.JoinVertical(lipgloss.Left, renderedActivities...)
 		body = lipgloss.JoinVertical(lipgloss.Left, title, body)
 	}
