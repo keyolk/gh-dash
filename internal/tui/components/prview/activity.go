@@ -72,10 +72,20 @@ func (m *Model) renderActivity() string {
 			if len(snippet) > 80 {
 				snippet = snippet[:79] + "…"
 			}
-			summary := lipgloss.NewStyle().Faint(true).Render(
-				fmt.Sprintf("▸ resolved [%d msgs] %s:%d  %s — %s",
-					n, thread.Path, thread.Line, latest.Author.Login, snippet),
-			)
+			label := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("11")).Bold(true).
+				Render("▶ resolved")
+			meta := lipgloss.NewStyle().Faint(true).Render(
+				fmt.Sprintf("  [%d msgs]  %s:%d  ", n, thread.Path, thread.Line))
+			authorTxt := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).
+				Render(latest.Author.Login + " — ")
+			line := label + meta + authorTxt + snippet
+			summary := lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("11")).
+				PaddingLeft(1).
+				Render(line)
 			activities = append(activities, RenderedActivity{
 				UpdatedAt:      latest.UpdatedAt,
 				RenderedString: summary,
@@ -94,8 +104,17 @@ func (m *Model) renderActivity() string {
 			tag = "collapsed"
 		}
 		if tag != "" {
-			summary := lipgloss.NewStyle().Faint(true).Render(
-				fmt.Sprintf("[%s] %s:%d", tag, thread.Path, thread.Line))
+			banner := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("13")).Bold(true).
+				Render("◉ " + tag)
+			loc := lipgloss.NewStyle().Faint(true).Render(
+				fmt.Sprintf("  %s:%d", thread.Path, thread.Line))
+			summary := lipgloss.NewStyle().
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color("13")).
+				PaddingLeft(1).
+				Render(banner + loc)
 			activities = append(activities, RenderedActivity{
 				UpdatedAt:      thread.Comments.Nodes[0].UpdatedAt,
 				RenderedString: summary,
@@ -191,54 +210,76 @@ func (m *Model) renderComment(
 	markdownRenderer glamour.TermRenderer,
 ) (string, error) {
 	width := m.getIndentedContentWidth()
-	authorAndTime := lipgloss.NewStyle().
-		Width(width).
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(m.ctx.Theme.FaintBorder).Render(
-		lipgloss.JoinHorizontal(
-			lipgloss.Top,
-			m.ctx.Styles.Common.MainTextStyle.Render(comment.Author),
-			" ",
-			lipgloss.NewStyle().
-				Foreground(m.ctx.Theme.FaintText).
-				Render(utils.TimeElapsed(comment.UpdatedAt)),
-		))
+	innerWidth := width - 2 // border eats 2 cells
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
 
-	var header string
+	authorLine := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		m.ctx.Styles.Common.MainTextStyle.Render(comment.Author),
+		"  ",
+		lipgloss.NewStyle().
+			Foreground(m.ctx.Theme.FaintText).
+			Render(utils.TimeElapsed(comment.UpdatedAt)),
+	)
+
+	var pathLine string
 	if comment.Path != nil && comment.Line != nil {
-		filePath := lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).Width(width).Render(
-			fmt.Sprintf(
-				"%s#l%d",
-				*comment.Path,
-				*comment.Line,
-			),
-		)
-		header = lipgloss.JoinVertical(lipgloss.Left, authorAndTime, filePath, "")
-	} else {
-		header = authorAndTime
+		pathLine = lipgloss.NewStyle().Foreground(m.ctx.Theme.FaintText).
+			Render(fmt.Sprintf("%s#L%d", *comment.Path, *comment.Line))
 	}
 
 	body := lineCleanupRegex.ReplaceAllString(comment.Body, "")
-	body, err := markdownRenderer.Render(body)
+	rendered, err := markdownRenderer.Render(body)
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		body,
-	), err
+	parts := []string{authorLine}
+	if pathLine != "" {
+		parts = append(parts, pathLine)
+	}
+	parts = append(parts, rendered)
+	card := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	boxed := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.ctx.Theme.FaintBorder).
+		Padding(0, 1).
+		Width(innerWidth).
+		Render(card)
+
+	// One blank line after each comment so successive cards don't sit
+	// glued together.
+	return boxed + "\n", err
 }
 
 func (m *Model) renderReview(
 	review data.Review,
 	markdownRenderer glamour.TermRenderer,
 ) (string, error) {
+	width := m.getIndentedContentWidth()
+	innerWidth := width - 2
+	if innerWidth < 10 {
+		innerWidth = 10
+	}
 	header := m.renderReviewHeader(review)
 	body, err := markdownRenderer.Render(review.Body)
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		body,
-	), err
+	card := lipgloss.JoinVertical(lipgloss.Left, header, body)
+
+	// Pick a border colour that reflects the review state so the user can
+	// scan approvals / change requests at a glance.
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		Width(innerWidth)
+	switch review.State {
+	case "APPROVED":
+		box = box.BorderForeground(lipgloss.Color("10"))
+	case "CHANGES_REQUESTED":
+		box = box.BorderForeground(lipgloss.Color("9"))
+	default:
+		box = box.BorderForeground(m.ctx.Theme.FaintBorder)
+	}
+	return box.Render(card) + "\n", err
 }
 
 func (m *Model) renderReviewHeader(review data.Review) string {
