@@ -27,8 +27,27 @@ func (m *Model) renderActivity() string {
 	var activities []RenderedActivity
 	var comments []comment
 
+	// While the enriched payload is in-flight we can still show the
+	// reviews we already have on the primary PR record, plus a small
+	// "loading…" hint at the top. This avoids the user staring at a
+	// blank "Loading..." screen waiting for a slow GraphQL response.
 	if !m.pr.Data.IsEnriched {
-		return bodyStyle.Render("Loading...")
+		var partial []string
+		hint := lipgloss.NewStyle().Italic(true).
+			Foreground(m.ctx.Theme.FaintText).
+			Render("Loading comments…")
+		partial = append(partial, hint)
+		for _, review := range m.pr.Data.Primary.Reviews.Nodes {
+			renderedReview, err := m.renderReview(review, markdownRenderer)
+			if err != nil {
+				continue
+			}
+			partial = append(partial, renderedReview)
+		}
+		if len(partial) == 1 {
+			return bodyStyle.Render(hint)
+		}
+		return bodyStyle.Render(lipgloss.JoinVertical(lipgloss.Left, partial...))
 	}
 
 	for _, review := range m.pr.Data.Enriched.ReviewThreads.Nodes {
