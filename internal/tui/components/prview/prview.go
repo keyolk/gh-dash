@@ -44,6 +44,9 @@ type Model struct {
 	// expand (collapsed / resolved / outdated threads stay summarised
 	// otherwise to keep the activity tab snappy).
 	expandedThreads map[string]bool
+	// enrichErr surfaces a failed enrichment fetch so the Activity tab
+	// can display the error instead of an indefinite "Loading…" message.
+	enrichErr error
 }
 
 var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
@@ -130,6 +133,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// (resolved / outdated) review threads.
 		if keyMsg.String() == "T" && m.carousel.Cursor() == 1 {
 			m.toggleThreadExpansion()
+		}
+		// `U` (anywhere in the PR sidebar) retries enrichment when a
+		// previous fetch failed, so the user isn't stuck on a stale
+		// "loading…" / error screen.
+		if keyMsg.String() == "U" && (m.enrichErr != nil || !m.pr.Data.IsEnriched) {
+			if rcmd := m.RetryEnrich(); rcmd != nil {
+				return m, tea.Batch(cmd, rcmd)
+			}
 		}
 	}
 
@@ -822,7 +833,28 @@ func (m *Model) SetEnrichedPR(data data.EnrichedPullRequestData) {
 	if m.pr.Data.Primary.Url == data.Url {
 		m.pr.Data.Enriched = data
 		m.pr.Data.IsEnriched = true
+		m.enrichErr = nil
 	}
+}
+
+// SetEnrichError records a failed enrichment fetch so the Activity tab
+// can surface it. Calling this with nil clears any previous error.
+func (m *Model) SetEnrichError(err error) {
+	m.enrichErr = err
+}
+
+// EnrichError returns the last enrichment-fetch error (or nil).
+func (m *Model) EnrichError() error { return m.enrichErr }
+
+// RetryEnrich resets the IsEnriched flag so EnrichCurrRow will issue a
+// fresh fetch on the next call.
+func (m *Model) RetryEnrich() tea.Cmd {
+	if m.pr == nil {
+		return nil
+	}
+	m.pr.Data.IsEnriched = false
+	m.enrichErr = nil
+	return m.EnrichCurrRow()
 }
 
 func (m *Model) GetIsLabeling() bool {

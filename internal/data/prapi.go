@@ -571,11 +571,27 @@ func FetchPullRequest(prUrl string) (EnrichedPullRequestData, error) {
 		"url": githubv4.URI{URL: parsedUrl},
 	}
 	log.Debug("Fetching PR", "url", prUrl)
-	err = client.Query("FetchPullRequest", &queryResult, variables)
-	if err != nil {
-		return EnrichedPullRequestData{}, err
-	}
-	log.Info("Successfully fetched PR", "url", prUrl)
 
-	return queryResult.Resource.PullRequest, nil
+	// Run the query on a separate goroutine so we can enforce a timeout
+	// without depending on the underlying client honouring contexts.
+	type result struct {
+		data EnrichedPullRequestData
+		err  error
+	}
+	resultC := make(chan result, 1)
+	go func() {
+		qerr := client.Query("FetchPullRequest", &queryResult, variables)
+		resultC <- result{data: queryResult.Resource.PullRequest, err: qerr}
+	}()
+	select {
+	case r := <-resultC:
+		if r.err != nil {
+			return EnrichedPullRequestData{}, r.err
+		}
+		log.Info("Successfully fetched PR", "url", prUrl)
+		return r.data, nil
+	case <-time.After(45 * time.Second):
+		log.Warn("Fetching PR timed out", "url", prUrl)
+		return EnrichedPullRequestData{}, fmt.Errorf("timed out after 45s (PR is large or API is slow)")
+	}
 }

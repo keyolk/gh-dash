@@ -37,6 +37,11 @@ func (m *Model) renderActivity() string {
 		hint := lipgloss.NewStyle().Italic(true).
 			Foreground(m.ctx.Theme.FaintText).
 			Render("Loading comments…")
+		if m.enrichErr != nil {
+			hint = lipgloss.NewStyle().Bold(true).
+				Foreground(m.ctx.Theme.ErrorText).
+				Render(fmt.Sprintf("Failed to load comments: %v   (press U to retry)", m.enrichErr))
+		}
 		partial = append(partial, hint)
 		for _, review := range m.pr.Data.Primary.Reviews.Nodes {
 			renderedReview, err := m.renderReview(review, markdownRenderer)

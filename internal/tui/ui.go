@@ -820,6 +820,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, syncCmd)
 		} else {
 			log.Error("failed enriching pr", "err", msg.Err)
+			m.prView.SetEnrichError(msg.Err)
+			m.ctx.Error = fmt.Errorf("enrich PR: %w", msg.Err)
+			syncCmd := m.syncSidebar()
+			cmds = append(cmds, syncCmd)
 		}
 
 	case notificationPRFetchedMsg:
