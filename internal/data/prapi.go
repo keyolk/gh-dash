@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"charm.land/log/v2"
@@ -586,12 +587,42 @@ func FetchPullRequest(prUrl string) (EnrichedPullRequestData, error) {
 	select {
 	case r := <-resultC:
 		if r.err != nil {
+			// GraphQL can return a "Resource not accessible by personal
+			// access token" error for an entire query when only one nested
+			// node (e.g. a particular commit) is denied. Fall back to REST
+			// for the comment/review fields the Activity tab cares about
+			// so the user can still read discussion even when commit-level
+			// access is missing.
+			if shouldFallbackToREST(r.err) {
+				log.Warn("GraphQL enrichment failed, falling back to REST",
+					"url", prUrl, "err", r.err)
+				rest, restErr := FetchPullRequestREST(prUrl)
+				if restErr == nil {
+					return rest, nil
+				}
+				log.Warn("REST fallback also failed", "url", prUrl, "err", restErr)
+			}
 			return EnrichedPullRequestData{}, r.err
 		}
 		log.Info("Successfully fetched PR", "url", prUrl)
 		return r.data, nil
 	case <-time.After(45 * time.Second):
-		log.Warn("Fetching PR timed out", "url", prUrl)
+		log.Warn("Fetching PR timed out, trying REST fallback", "url", prUrl)
+		if rest, restErr := FetchPullRequestREST(prUrl); restErr == nil {
+			return rest, nil
+		}
 		return EnrichedPullRequestData{}, fmt.Errorf("timed out after 45s (PR is large or API is slow)")
 	}
+}
+
+// shouldFallbackToREST reports whether `err` looks like a per-resource
+// permission failure that REST is likely to recover from.
+func shouldFallbackToREST(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Resource not accessible") ||
+		strings.Contains(msg, "personal access token") ||
+		strings.Contains(msg, "FORBIDDEN")
 }
