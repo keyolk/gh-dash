@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -63,6 +64,7 @@ func submitReview(prNumber int, repo, event, body string, pending []PendingComme
 		type apiComment struct {
 			Path      string `json:"path"`
 			Side      string `json:"side,omitempty"`
+			StartSide string `json:"start_side,omitempty"`
 			Line      int    `json:"line"`
 			StartLine int    `json:"start_line,omitempty"`
 			Body      string `json:"body"`
@@ -73,11 +75,16 @@ func submitReview(prNumber int, repo, event, body string, pending []PendingComme
 			Comments []apiComment `json:"comments,omitempty"`
 		}{Event: event, Body: body}
 		for _, p := range pending {
-			payload.Comments = append(payload.Comments, apiComment{
+			ac := apiComment{
 				Path: p.Path, Side: p.Side,
 				Line: p.Line, StartLine: p.StartLine,
 				Body: p.Body,
-			})
+			}
+			// For multi-line comments GitHub requires both side and start_side.
+			if p.StartLine != 0 {
+				ac.StartSide = p.Side
+			}
+			payload.Comments = append(payload.Comments, ac)
 		}
 		buf, err := json.Marshal(payload)
 		if err != nil {
@@ -86,8 +93,17 @@ func submitReview(prNumber int, repo, event, body string, pending []PendingComme
 		path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, prNumber)
 		cmd := exec.Command("gh", "api", "--method", "POST", path, "--input", "-")
 		cmd.Stdin = bytes.NewReader(buf)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
 		if _, perr := cmd.Output(); perr != nil {
-			return ReviewSubmitted{PRNumber: prNumber, Repo: repo, Event: event, Err: perr}
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = perr.Error()
+			}
+			return ReviewSubmitted{
+				PRNumber: prNumber, Repo: repo, Event: event,
+				Err: fmt.Errorf("gh api: %s", msg),
+			}
 		}
 		return ReviewSubmitted{PRNumber: prNumber, Repo: repo, Event: event}
 	}

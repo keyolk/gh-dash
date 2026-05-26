@@ -65,6 +65,11 @@ type Model struct {
 	activeFile int
 
 	search searchUI
+
+	// status is a transient one-line message shown in the footer area
+	// (e.g. "review submitted", "no pending comments", error text).
+	status      string
+	statusIsErr bool
 }
 
 // NewModel constructs an empty diff viewer.
@@ -344,6 +349,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if !m.IsOpen {
 		return m, nil
 	}
+	// Any user keystroke clears a transient status message (toast).
+	if _, ok := msg.(tea.KeyMsg); ok && m.status != "" {
+		m.status = ""
+		m.statusIsErr = false
+	}
 	if m.editor.active {
 		cmd := m.editor.update(msg)
 		return m, cmd
@@ -482,6 +492,8 @@ func (m *Model) SaveComment() bool {
 		m.comments[ref] = true
 	}
 	m.ClearSelection()
+	m.setStatus(fmt.Sprintf("pending comment saved (%d total) — press R/A/X to submit",
+		len(m.pending)), false)
 	m.rebuild()
 	return true
 }
@@ -561,8 +573,10 @@ func matchesLine(ec ExistingComment, ref CodeRef) bool {
 // event must be one of "COMMENT", "APPROVE", "REQUEST_CHANGES".
 func (m *Model) SubmitReview(event, body string) tea.Cmd {
 	if len(m.pending) == 0 && event == "COMMENT" && body == "" {
+		m.setStatus("nothing to submit — write a comment first", true)
 		return nil
 	}
+	m.setStatus(fmt.Sprintf("submitting %s review…", strings.ToLower(event)), false)
 	pending := make([]PendingComment, len(m.pending))
 	copy(pending, m.pending)
 	return submitReview(m.PRNumber, m.Repo, event, body, pending)
@@ -576,14 +590,28 @@ func (m *Model) HandleReviewSubmitted(msg ReviewSubmitted) tea.Cmd {
 		return nil
 	}
 	if msg.Err != nil {
-		m.err = msg.Err
+		m.setStatus(fmt.Sprintf("submit failed: %v", msg.Err), true)
 		log.Warn("submit review failed", "pr", msg.PRNumber, "err", msg.Err)
-		m.refreshViewport()
 		return nil
 	}
+	count := len(m.pending)
 	m.pending = nil
+	m.setStatus(fmt.Sprintf("review submitted (%s, %d comment(s))",
+		strings.ToLower(msg.Event), count), false)
 	// Re-fetch so freshly posted comments are visible.
 	return fetchExistingComments(m.PRNumber, m.Repo)
+}
+
+// setStatus replaces the transient footer message.
+func (m *Model) setStatus(s string, isErr bool) {
+	m.status = s
+	m.statusIsErr = isErr
+}
+
+// ClearStatus removes the transient footer message (no-op when empty).
+func (m *Model) ClearStatus() {
+	m.status = ""
+	m.statusIsErr = false
 }
 
 // ensureCursorVisible scrolls the viewport so the cursor row stays inside
@@ -928,6 +956,13 @@ func (m Model) headerView(width int) string {
 }
 
 func (m Model) footerView(width int) string {
+	if m.status != "" {
+		c := lipgloss.Color("10")
+		if m.statusIsErr {
+			c = lipgloss.Color("9")
+		}
+		return capDisplay(lipgloss.NewStyle().Foreground(c).Bold(true).Render(" "+m.status), width-1)
+	}
 	hints := " j/k cursor · h/l side · [ ] file · / search · V/⌃V select · c comment · R/A/X submit · tab mode · ? help · q close "
 	if lipgloss.Width(hints) > width {
 		hints = " / search · [ ] file · c comment · R submit · ? help · q close "
