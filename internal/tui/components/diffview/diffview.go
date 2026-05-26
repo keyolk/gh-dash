@@ -458,6 +458,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 // EditorActive reports whether the comment editor modal is open.
 func (m *Model) EditorActive() bool { return m.editor.active }
 
+// SearchActive reports whether the in-viewer search palette is open.
+func (m *Model) SearchActive() bool { return m.search.active }
+
+// HelpActive reports whether the help overlay is showing.
+func (m *Model) HelpActive() bool { return m.helpVisible }
+
 // StartComment opens the comment editor against the current selection (or
 // just the cursor row if no selection is active).
 func (m *Model) StartComment() {

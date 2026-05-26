@@ -200,6 +200,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diffView, cmd = m.diffView.Update(msg)
 				return m, cmd
 			}
+			// When the search palette is open route every key through the
+			// diff viewer (which owns the textinput + selection / esc /
+			// enter logic) so we don't accidentally trigger global shortcuts
+			// like `c` (comment) or `esc` (close) while the user is typing.
+			if m.diffView.SearchActive() {
+				m.diffView, cmd = m.diffView.Update(msg)
+				return m, cmd
+			}
+			// When the help overlay is showing, any key dismisses it without
+			// also running its normal action — this prevents `c`/`q`/`esc`
+			// from triggering comment / close while the user is reading the
+			// keymap.
+			if m.diffView.HelpActive() {
+				m.diffView.ToggleHelp()
+				return m, nil
+			}
 			switch {
 			case key.Matches(msg, keys.DiffKeys.ToggleMode):
 				m.diffView.ToggleMode()
