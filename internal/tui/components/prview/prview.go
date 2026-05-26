@@ -47,6 +47,15 @@ type Model struct {
 	// enrichErr surfaces a failed enrichment fetch so the Activity tab
 	// can display the error instead of an indefinite "Loading…" message.
 	enrichErr error
+	// foldedActivities tracks user-collapsed activity ids (individual
+	// comments / reviews) in the Activity tab.
+	foldedActivities map[string]bool
+	// activityAnchors maps each rendered activity to its first line offset
+	// inside the Activity body. Re-populated on every renderActivity call.
+	activityAnchors []ActivityAnchor
+	// activityCursor is the index into activityAnchors that the user has
+	// selected via n / N navigation. -1 means "no selection".
+	activityCursor int
 }
 
 var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
@@ -61,10 +70,12 @@ func NewModel(ctx *context.ProgramContext) Model {
 	cmp := cmpcontroller.New(ctx, inputbox.ModelOpts{TextArea: &ta})
 
 	return Model{
-		pr:              nil,
-		carousel:        c,
-		editor:          cmp,
-		expandedThreads: map[string]bool{},
+		pr:               nil,
+		carousel:         c,
+		editor:           cmp,
+		expandedThreads:  map[string]bool{},
+		foldedActivities: map[string]bool{},
+		activityCursor:   -1,
 	}
 }
 
@@ -134,6 +145,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if keyMsg.String() == "T" && m.carousel.Cursor() == 1 {
 			m.toggleThreadExpansion()
 		}
+		// n / N : jump to next / previous activity in the Activity tab.
+		if m.carousel.Cursor() == 1 && (keyMsg.String() == "n" || keyMsg.String() == "N") {
+			m.moveActivityCursor(keyMsg.String() == "n")
+		}
+		// f : toggle minimised state on the activity under the cursor.
+		if keyMsg.String() == "f" && m.carousel.Cursor() == 1 {
+			m.toggleActivityFold()
+		}
 		// `U` (anywhere in the PR sidebar) retries enrichment when a
 		// previous fetch failed, so the user isn't stuck on a stale
 		// "loading…" / error screen.
@@ -147,9 +166,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// toggleThreadExpansion flips the expansion state for all resolved review
-// threads on the current PR. When any resolved thread is collapsed we expand
-// them all; when all are already expanded we collapse them again.
 func (m *Model) toggleThreadExpansion() {
 	if m.pr == nil || !m.pr.Data.IsEnriched {
 		return
@@ -185,6 +201,66 @@ func (m *Model) toggleThreadExpansion() {
 			m.expandedThreads[t.Id] = true
 		}
 	}
+}
+
+// moveActivityCursor advances the Activity tab's per-comment cursor to the
+// next (forward=true) or previous comment and returns. Re-rendering on
+// the next View() refreshes the highlight; the parent UI is responsible
+// for scrolling the surrounding viewport.
+func (m *Model) moveActivityCursor(forward bool) {
+	n := len(m.activityAnchors)
+	if n == 0 {
+		// No anchors yet — the Activity tab hasn't been rendered. Seed at
+		// the first slot so the next render places the cursor there.
+		m.activityCursor = 0
+		return
+	}
+	if m.activityCursor < 0 {
+		if forward {
+			m.activityCursor = 0
+		} else {
+			m.activityCursor = n - 1
+		}
+		return
+	}
+	if forward {
+		m.activityCursor++
+		if m.activityCursor >= n {
+			m.activityCursor = n - 1
+		}
+	} else {
+		m.activityCursor--
+		if m.activityCursor < 0 {
+			m.activityCursor = 0
+		}
+	}
+}
+
+// toggleActivityFold flips the user-side fold state for the activity that
+// currently has the cursor.
+func (m *Model) toggleActivityFold() {
+	if m.activityCursor < 0 || m.activityCursor >= len(m.activityAnchors) {
+		return
+	}
+	if m.foldedActivities == nil {
+		m.foldedActivities = map[string]bool{}
+	}
+	id := m.activityAnchors[m.activityCursor].Id
+	if m.foldedActivities[id] {
+		delete(m.foldedActivities, id)
+	} else {
+		m.foldedActivities[id] = true
+	}
+}
+
+// ActivityCursorLine returns the line offset (inside the Activity body)
+// where the currently-selected activity starts, or -1 when nothing is
+// selected. The parent UI uses this to scroll its surrounding viewport.
+func (m *Model) ActivityCursorLine() int {
+	if m.activityCursor < 0 || m.activityCursor >= len(m.activityAnchors) {
+		return -1
+	}
+	return m.activityAnchors[m.activityCursor].Line
 }
 
 func (m Model) View() string {

@@ -143,6 +143,11 @@ func (m *Model) YOffset() int {
 	return m.viewport.YOffset()
 }
 
+// SetYOffset moves the viewport to start at the given line offset.
+func (m *Model) SetYOffset(n int) {
+	m.viewport.SetYOffset(n)
+}
+
 func (m *Model) ScrollToPercent(percent float64) {
 	totalLines := m.viewport.TotalLineCount()
 	targetLine := int(float64(totalLines) * percent)

@@ -277,6 +277,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.prView, cmd = m.prView.Update(msg)
 			m.sidebar, sideCmd = m.sidebar.Update(msg)
 			m.syncSidebar()
+			// After n / N / f the cursor may have moved or a fold changed;
+			// re-anchor the viewport so the user sees the active activity.
+			if line := m.prView.ActivityCursorLine(); line >= 0 &&
+				(msg.String() == "n" || msg.String() == "N" || msg.String() == "f") {
+				m.sidebar.SetYOffset(line)
+			}
 			return m, tea.Batch(cmd, sideCmd)
 		}
 
@@ -1094,7 +1100,7 @@ func (m Model) View() tea.View {
 			Foreground(lipgloss.Color("12")).Bold(true).
 			Render("PR DETAIL")
 		hint := lipgloss.NewStyle().Faint(true).
-			Render(" j/k scroll · ctrl-d/u page · [/] tabs · T expand · U retry · esc/q back ")
+			Render(" j/k scroll · n/N comment · f minimise · ctrl-d/u page · [/] tabs · T expand · U retry · esc/q back ")
 		footer := lipgloss.NewStyle().
 			Width(m.ctx.ScreenWidth).
 			Render(modeBadge + "  " + hint)

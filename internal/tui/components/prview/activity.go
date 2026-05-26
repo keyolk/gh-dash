@@ -16,8 +16,18 @@ import (
 )
 
 type RenderedActivity struct {
+	Id             string // stable identifier for fold / cursor tracking
+	Kind           string // "comment" | "review" | "thread-banner" | "resolved-summary"
 	UpdatedAt      time.Time
 	RenderedString string
+}
+
+// ActivityAnchor pins a rendered activity to the line index inside the PR
+// view's content stream so the parent can scroll directly to it.
+type ActivityAnchor struct {
+	Id   string
+	Kind string
+	Line int // 0-based row index of the activity's first line
 }
 
 func (m *Model) renderActivity() string {
@@ -87,6 +97,8 @@ func (m *Model) renderActivity() string {
 				PaddingLeft(1).
 				Render(line)
 			activities = append(activities, RenderedActivity{
+				Id:             "thread-" + thread.Id,
+				Kind:           "resolved-summary",
 				UpdatedAt:      latest.UpdatedAt,
 				RenderedString: summary,
 			})
@@ -116,12 +128,15 @@ func (m *Model) renderActivity() string {
 				PaddingLeft(1).
 				Render(banner + loc)
 			activities = append(activities, RenderedActivity{
+				Id:             "banner-" + thread.Id,
+				Kind:           "thread-banner",
 				UpdatedAt:      thread.Comments.Nodes[0].UpdatedAt,
 				RenderedString: summary,
 			})
 		}
-		for _, c := range thread.Comments.Nodes {
+		for ci, c := range thread.Comments.Nodes {
 			comments = append(comments, comment{
+				Id:        fmt.Sprintf("rc-%s-%d", thread.Id, ci),
 				Author:    c.Author.Login,
 				Body:      c.Body,
 				UpdatedAt: c.UpdatedAt,
@@ -131,31 +146,36 @@ func (m *Model) renderActivity() string {
 		}
 	}
 
-	for _, c := range m.pr.Data.Enriched.Comments.Nodes {
+	for ci, c := range m.pr.Data.Enriched.Comments.Nodes {
 		comments = append(comments, comment{
+			Id:        fmt.Sprintf("ic-%d", ci),
 			Author:    c.Author.Login,
 			Body:      c.Body,
 			UpdatedAt: c.UpdatedAt,
 		})
 	}
 
-	for _, comment := range comments {
-		renderedComment, err := m.renderComment(comment, markdownRenderer)
+	for _, c := range comments {
+		renderedComment, err := m.renderComment(c, markdownRenderer)
 		if err != nil {
 			continue
 		}
 		activities = append(activities, RenderedActivity{
-			UpdatedAt:      comment.UpdatedAt,
+			Id:             c.Id,
+			Kind:           "comment",
+			UpdatedAt:      c.UpdatedAt,
 			RenderedString: renderedComment,
 		})
 	}
 
-	for _, review := range m.pr.Data.Primary.Reviews.Nodes {
+	for ri, review := range m.pr.Data.Primary.Reviews.Nodes {
 		renderedReview, err := m.renderReview(review, markdownRenderer)
 		if err != nil {
 			continue
 		}
 		activities = append(activities, RenderedActivity{
+			Id:             fmt.Sprintf("review-%d", ri),
+			Kind:           "review",
 			UpdatedAt:      review.UpdatedAt,
 			RenderedString: renderedReview,
 		})
@@ -165,14 +185,27 @@ func (m *Model) renderActivity() string {
 		return activities[i].UpdatedAt.Before(activities[j].UpdatedAt)
 	})
 
+	// Apply user-side folds (press `f` over a comment to collapse it) by
+	// swapping the rendered body for a one-liner.
+	for i, act := range activities {
+		if m.foldedActivities[act.Id] {
+			activities[i].RenderedString = m.renderFoldedActivity(act)
+		}
+	}
+
+	// Re-anchor every activity so n / N can scroll directly to them and
+	// remember the previously-selected cursor by id.
+	prevCursorId := ""
+	if m.activityCursor >= 0 && m.activityCursor < len(m.activityAnchors) {
+		prevCursorId = m.activityAnchors[m.activityCursor].Id
+	}
+	m.activityAnchors = m.activityAnchors[:0]
+
 	body := ""
 	if len(activities) == 0 {
 		body = renderEmptyState()
 	} else {
 		var renderedActivities []string
-		for _, activity := range activities {
-			renderedActivities = append(renderedActivities, activity.RenderedString)
-		}
 		// Count folded (resolved) threads so we can hint at `T` to expand them.
 		var folded int
 		for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
@@ -180,14 +213,54 @@ func (m *Model) renderActivity() string {
 				folded++
 			}
 		}
+		var userFolded int
+		for _, act := range activities {
+			if m.foldedActivities[act.Id] {
+				userFolded++
+			}
+		}
 		titleText := fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities))
 		if folded > 0 {
 			titleText += "  " + lipgloss.NewStyle().Faint(true).
-				Render(fmt.Sprintf("· %d folded (press T to expand)", folded))
+				Render(fmt.Sprintf("· %d resolved folded (T)", folded))
 		}
+		if userFolded > 0 {
+			titleText += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("11")).
+				Render(fmt.Sprintf("· %d minimised (f)", userFolded))
+		}
+		titleText += "  " + lipgloss.NewStyle().Faint(true).
+			Render("· n/N next/prev")
 		title := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(titleText)
+		renderedActivities = append(renderedActivities, title)
+
+		// Track line offsets so cursor / next-prev navigation works.
+		// title occupies its own row plus a margin.
+		currentLine := strings.Count(title, "\n") + 1 + 1 // +1 for MarginBottom
+
+		for i, act := range activities {
+			rendered := act.RenderedString
+			if i == m.activityCursor {
+				rendered = m.highlightCursor(rendered)
+			}
+			m.activityAnchors = append(m.activityAnchors, ActivityAnchor{
+				Id: act.Id, Kind: act.Kind, Line: currentLine,
+			})
+			renderedActivities = append(renderedActivities, rendered)
+			currentLine += strings.Count(rendered, "\n") + 1
+		}
 		body = lipgloss.JoinVertical(lipgloss.Left, renderedActivities...)
-		body = lipgloss.JoinVertical(lipgloss.Left, title, body)
+	}
+
+	// Restore the cursor index after a re-layout (e.g. a fold changes a
+	// row's id ordering would otherwise leave the cursor on the wrong
+	// activity).
+	if prevCursorId != "" {
+		for i, a := range m.activityAnchors {
+			if a.Id == prevCursorId {
+				m.activityCursor = i
+				break
+			}
+		}
 	}
 
 	return bodyStyle.Render(body)
@@ -197,7 +270,72 @@ func renderEmptyState() string {
 	return lipgloss.NewStyle().Italic(true).Render("No comments...")
 }
 
+// renderFoldedActivity collapses a comment / review into a single line the
+// user can still scan. Only the first non-empty body line is shown.
+func (m *Model) renderFoldedActivity(act RenderedActivity) string {
+	// Try to extract a body preview from the rendered content's first
+	// few lines. We strip ANSI by taking only printable runes after we
+	// search for the title fragment.
+	preview := strings.SplitN(strings.TrimSpace(act.RenderedString), "\n", 6)
+	var hint string
+	for _, p := range preview {
+		s := strings.TrimSpace(stripANSIQuick(p))
+		if s == "" || strings.HasPrefix(s, "╭") || strings.HasPrefix(s, "│") {
+			continue
+		}
+		if len(s) > 80 {
+			s = s[:79] + "…"
+		}
+		hint = s
+		break
+	}
+	kindBadge := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("11")).Bold(true).Render("▶ minimised")
+	tail := lipgloss.NewStyle().Faint(true).Render(
+		fmt.Sprintf("  [%s · %s]  %s",
+			act.Kind, utils.TimeElapsed(act.UpdatedAt), hint))
+	return lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderLeft(true).
+		BorderForeground(lipgloss.Color("11")).
+		PaddingLeft(1).
+		Render(kindBadge + tail)
+}
+
+// highlightCursor wraps a rendered activity in a left bar that marks it as
+// the current selection from n / N navigation.
+func (m *Model) highlightCursor(s string) string {
+	return lipgloss.NewStyle().
+		BorderStyle(lipgloss.ThickBorder()).
+		BorderLeft(true).
+		BorderForeground(lipgloss.Color("12")).
+		PaddingLeft(1).
+		Render(s)
+}
+
+// stripANSIQuick removes ANSI escape sequences. We don't import a heavier
+// dep just for this — comments aren't long enough to need it.
+func stripANSIQuick(s string) string {
+	var out strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if r == 'm' {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
 type comment struct {
+	Id        string
 	Author    string
 	UpdatedAt time.Time
 	Body      string
