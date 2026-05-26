@@ -260,9 +260,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncProgramContext()
 				return m, nil
 			}
+			// Route the key to both: prView handles tab switching / actions,
+			// sidebar owns the viewport that actually scrolls the rendered
+			// content.
+			var sideCmd tea.Cmd
 			m.prView, cmd = m.prView.Update(msg)
+			m.sidebar, sideCmd = m.sidebar.Update(msg)
 			m.syncSidebar()
-			return m, cmd
+			return m, tea.Batch(cmd, sideCmd)
 		}
 
 		if currSection != nil && (currSection.IsSearchFocused() ||
@@ -1050,17 +1055,17 @@ func (m Model) View() tea.View {
 	}
 
 	// Full-screen PR detail mode: hide the list / tabs and render the PR
-	// view across the whole window with a single hint footer.
+	// view across the whole window with a single hint footer. We delegate
+	// to m.sidebar.View() because syncSidebar() has already piped the PR
+	// view's rendered content into the sidebar's viewport, which is what
+	// owns the j/k / pgup / pgdn scroll behaviour.
 	if m.prDetailFullscreen {
-		body := m.prView.View()
+		body := m.sidebar.View()
+		header := lipgloss.NewStyle().Bold(true).
+			Render(" PR detail · esc/q to back to list ")
 		hint := lipgloss.NewStyle().Faint(true).
-			Render(" [/] tabs · T expand resolved threads · U retry · esc/q back ")
-		full := lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.NewStyle().Bold(true).
-				Render(fmt.Sprintf(" PR detail · esc/q to back to list ")),
-			body,
-			hint,
-		)
+			Render(" j/k or ↑/↓ scroll · ctrl-d/u half page · [/] tabs · T expand · U retry · esc/q back ")
+		full := lipgloss.JoinVertical(lipgloss.Left, header, body, hint)
 		v.SetContent(lipgloss.NewStyle().
 			Width(m.ctx.ScreenWidth).
 			Height(m.ctx.ScreenHeight).

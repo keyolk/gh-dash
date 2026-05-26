@@ -45,6 +45,26 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(msg, keys.Keys.PageUp):
 			m.viewport.HalfPageUp()
 		}
+		// Vim-style scrolling keys for the PR sidebar. These are only
+		// useful when the sidebar has focus (full-screen PR detail mode)
+		// — in the inline layout the parent component owns these keys
+		// for cursor movement in the list, so we tolerate them being
+		// double-handled here (the viewport just scrolls a row that
+		// most users won't notice).
+		switch msg.String() {
+		case "j", "down":
+			m.viewport.ScrollDown(1)
+		case "k", "up":
+			m.viewport.ScrollUp(1)
+		case "g", "home":
+			m.viewport.GotoTop()
+		case "G", "end":
+			m.viewport.GotoBottom()
+		case "ctrl+d":
+			m.viewport.HalfPageDown()
+		case "ctrl+u":
+			m.viewport.HalfPageUp()
+		}
 	}
 
 	return m, nil
