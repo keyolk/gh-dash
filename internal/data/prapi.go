@@ -55,10 +55,10 @@ type EnrichedPullRequestData struct {
 	Repository         Repository
 	Commits            LastCommitWithStatusChecks `graphql:"commits(last: 1)"`
 	AllCommits         AllCommits                 `graphql:"allCommits: commits(last: 30)"`
-	Comments           CommentsWithBody           `graphql:"comments(last: 30, orderBy: { field: UPDATED_AT, direction: DESC })"`
-	ReviewThreads      ReviewThreadsWithComments  `graphql:"reviewThreads(last: 30)"`
+	Comments           CommentsWithBody           `graphql:"comments(last: 50, orderBy: { field: UPDATED_AT, direction: DESC })"`
+	ReviewThreads      ReviewThreadsWithComments  `graphql:"reviewThreads(last: 50)"`
 	ReviewRequests     ReviewRequests             `graphql:"reviewRequests(last: 30)"`
-	Reviews            Reviews                    `graphql:"reviews(last: 30)"`
+	Reviews            Reviews                    `graphql:"reviews(last: 50)"`
 	SuggestedReviewers []SuggestedReviewer
 	Files              ChangedFiles `graphql:"files(first: 5)"`
 }

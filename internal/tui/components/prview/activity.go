@@ -52,31 +52,24 @@ func (m *Model) renderActivity() string {
 	}
 
 	for _, thread := range m.pr.Data.Enriched.ReviewThreads.Nodes {
-		// Collapsed / resolved / outdated threads are usually noise — show a
-		// one-line summary and skip rendering their bodies unless the user
-		// explicitly expands the thread. This keeps the activity tab fast
-		// on long-running PRs with lots of resolved review threads.
-		folded := thread.IsResolved || thread.IsCollapsed || thread.IsOutdated
+		// Only auto-fold *resolved* threads — outdated / collapsed threads
+		// often still contain context the user wants to read at a glance,
+		// and force-pushes mark a lot of live discussion as outdated. The
+		// user can still press T to fully unfold resolved threads.
+		folded := thread.IsResolved
 		if folded && !m.expandedThreads[thread.Id] {
 			n := len(thread.Comments.Nodes)
 			if n == 0 {
 				continue
 			}
 			latest := thread.Comments.Nodes[n-1]
-			tag := "collapsed"
-			switch {
-			case thread.IsResolved:
-				tag = "resolved"
-			case thread.IsOutdated:
-				tag = "outdated"
-			}
 			snippet := strings.SplitN(strings.TrimSpace(latest.Body), "\n", 2)[0]
 			if len(snippet) > 80 {
 				snippet = snippet[:79] + "…"
 			}
 			summary := lipgloss.NewStyle().Faint(true).Render(
-				fmt.Sprintf("▸ %s [%d msgs] %s:%d  %s — %s",
-					tag, n, thread.Path, thread.Line, latest.Author.Login, snippet),
+				fmt.Sprintf("▸ resolved [%d msgs] %s:%d  %s — %s",
+					n, thread.Path, thread.Line, latest.Author.Login, snippet),
 			)
 			activities = append(activities, RenderedActivity{
 				UpdatedAt:      latest.UpdatedAt,
@@ -86,6 +79,23 @@ func (m *Model) renderActivity() string {
 		}
 		path := thread.Path
 		line := thread.Line
+		// Tag outdated / collapsed threads so the user knows the context,
+		// but still show the full conversation.
+		var tag string
+		switch {
+		case thread.IsOutdated:
+			tag = "outdated"
+		case thread.IsCollapsed:
+			tag = "collapsed"
+		}
+		if tag != "" {
+			summary := lipgloss.NewStyle().Faint(true).Render(
+				fmt.Sprintf("[%s] %s:%d", tag, thread.Path, thread.Line))
+			activities = append(activities, RenderedActivity{
+				UpdatedAt:      thread.Comments.Nodes[0].UpdatedAt,
+				RenderedString: summary,
+			})
+		}
 		for _, c := range thread.Comments.Nodes {
 			comments = append(comments, comment{
 				Author:    c.Author.Login,
@@ -139,13 +149,11 @@ func (m *Model) renderActivity() string {
 		for _, activity := range activities {
 			renderedActivities = append(renderedActivities, activity.RenderedString)
 		}
-		// Count folded threads so we can hint at `T` to expand them.
+		// Count folded (resolved) threads so we can hint at `T` to expand them.
 		var folded int
 		for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
-			if t.IsResolved || t.IsCollapsed || t.IsOutdated {
-				if !m.expandedThreads[t.Id] {
-					folded++
-				}
+			if t.IsResolved && !m.expandedThreads[t.Id] {
+				folded++
 			}
 		}
 		titleText := fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities))

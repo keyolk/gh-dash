@@ -136,8 +136,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// toggleThreadExpansion flips the expansion state for all folded review
-// threads on the current PR. When any folded thread is collapsed we expand
+// toggleThreadExpansion flips the expansion state for all resolved review
+// threads on the current PR. When any resolved thread is collapsed we expand
 // them all; when all are already expanded we collapse them again.
 func (m *Model) toggleThreadExpansion() {
 	if m.pr == nil || !m.pr.Data.IsEnriched {
@@ -149,7 +149,7 @@ func (m *Model) toggleThreadExpansion() {
 	allExpanded := true
 	hasFolded := false
 	for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
-		if !(t.IsResolved || t.IsCollapsed || t.IsOutdated) {
+		if !t.IsResolved {
 			continue
 		}
 		hasFolded = true
@@ -162,16 +162,15 @@ func (m *Model) toggleThreadExpansion() {
 		return
 	}
 	if allExpanded {
-		// Collapse all folded threads.
 		for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
-			if t.IsResolved || t.IsCollapsed || t.IsOutdated {
+			if t.IsResolved {
 				delete(m.expandedThreads, t.Id)
 			}
 		}
 		return
 	}
 	for _, t := range m.pr.Data.Enriched.ReviewThreads.Nodes {
-		if t.IsResolved || t.IsCollapsed || t.IsOutdated {
+		if t.IsResolved {
 			m.expandedThreads[t.Id] = true
 		}
 	}
