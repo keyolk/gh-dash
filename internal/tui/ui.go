@@ -65,6 +65,10 @@ type Model struct {
 	tasks            map[string]context.Task
 	positionOverride string // "" means no override, "right" or "bottom"
 	diffView         diffview.Model
+	// prDetailFullscreen renders the PR view full-screen when true, hiding
+	// the PR list / tabs / footer. Entered with `enter` on a PR row,
+	// exited with `esc` or `q`.
+	prDetailFullscreen bool
 }
 
 func NewModel(location config.Location) Model {
@@ -242,6 +246,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.diffView, cmd = m.diffView.Update(msg)
+			return m, cmd
+		}
+
+		// Full-screen PR detail mode owns the screen. Esc / q exits back to
+		// the PR list; every other key is forwarded to the PR view so the
+		// user can scroll the carousel tabs, comment, etc.
+		if m.prDetailFullscreen {
+			switch msg.String() {
+			case "esc", "q":
+				m.prDetailFullscreen = false
+				m.syncMainContentDimensions()
+				m.syncProgramContext()
+				return m, nil
+			}
+			m.prView, cmd = m.prView.Update(msg)
+			m.syncSidebar()
 			return m, cmd
 		}
 
@@ -481,6 +501,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case m.ctx.View == config.PRsView:
 			switch {
+			case msg.String() == "enter":
+				// Enter opens a full-screen PR detail view so the user can
+				// scroll long discussions and act on the PR without the
+				// list / tabs / footer chrome in the way.
+				if m.getCurrRowData() != nil {
+					m.prDetailFullscreen = true
+					m.sidebar.IsOpen = true
+					m.syncMainContentDimensions()
+					m.syncProgramContext()
+					cmd = m.syncSidebar()
+				}
+				return m, cmd
 			case key.Matches(msg, keys.PRKeys.PrevSidebarTab),
 				key.Matches(msg, keys.PRKeys.NextSidebarTab):
 				var scmds []tea.Cmd
@@ -1017,6 +1049,25 @@ func (m Model) View() tea.View {
 		return v
 	}
 
+	// Full-screen PR detail mode: hide the list / tabs and render the PR
+	// view across the whole window with a single hint footer.
+	if m.prDetailFullscreen {
+		body := m.prView.View()
+		hint := lipgloss.NewStyle().Faint(true).
+			Render(" [/] tabs · T expand resolved threads · U retry · esc/q back ")
+		full := lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Bold(true).
+				Render(fmt.Sprintf(" PR detail · esc/q to back to list ")),
+			body,
+			hint,
+		)
+		v.SetContent(lipgloss.NewStyle().
+			Width(m.ctx.ScreenWidth).
+			Height(m.ctx.ScreenHeight).
+			Render(full))
+		return v
+	}
+
 	s := strings.Builder{}
 	if m.ctx.View != config.RepoView {
 		s.WriteString(m.tabs.View())
@@ -1270,6 +1321,19 @@ func (m *Model) getBaseContentHeight() int {
 
 func (m *Model) syncMainContentDimensions() {
 	m.ctx.PreviewPosition = m.resolvePreviewPosition()
+
+	// Full-screen PR detail uses the entire screen: no list pane, no
+	// sidebar split. We still mark the sidebar as "open" because the PR
+	// view component reads its dimensions from the sidebar context.
+	if m.prDetailFullscreen {
+		m.ctx.SidebarOpen = true
+		m.ctx.PreviewPosition = "right"
+		m.ctx.MainContentWidth = 0
+		m.ctx.MainContentHeight = 0
+		m.ctx.DynamicPreviewWidth = m.ctx.ScreenWidth
+		m.ctx.DynamicPreviewHeight = m.getBaseContentHeight()
+		return
+	}
 
 	if !m.sidebar.IsOpen {
 		m.ctx.MainContentWidth = m.ctx.ScreenWidth
