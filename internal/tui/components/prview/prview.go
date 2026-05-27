@@ -271,6 +271,24 @@ func (m *Model) ActivityCursorLine() int {
 	return headerLines + m.activityAnchors[m.activityCursor].Line
 }
 
+// ActivityCursorHeight returns the number of rendered lines the currently
+// selected activity occupies (its anchor line up to the next anchor, or the
+// remaining content for the last one). Returns 0 when nothing is selected.
+// Used by the parent UI to keep the whole selected card in view.
+func (m *Model) ActivityCursorHeight() int {
+	if m.activityCursor < 0 || m.activityCursor >= len(m.activityAnchors) {
+		return 0
+	}
+	start := m.activityAnchors[m.activityCursor].Line
+	if m.activityCursor+1 < len(m.activityAnchors) {
+		next := m.activityAnchors[m.activityCursor+1].Line
+		if next > start {
+			return next - start
+		}
+	}
+	return 1
+}
+
 func (m *Model) View() string {
 	if !m.hasData() {
 		return ""

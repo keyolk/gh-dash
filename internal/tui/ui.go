@@ -278,10 +278,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sidebar, sideCmd = m.sidebar.Update(msg)
 			m.syncSidebar()
 			// After n / N / f the cursor may have moved or a fold changed;
-			// re-anchor the viewport so the user sees the active activity.
+			// re-anchor the viewport so the active activity stays fully in
+			// view (important for short / minimised items that could
+			// otherwise sit right at the edge).
 			if line := m.prView.ActivityCursorLine(); line >= 0 &&
 				(msg.String() == "n" || msg.String() == "N" || msg.String() == "f") {
-				m.sidebar.SetYOffset(line)
+				m.sidebar.EnsureVisible(line, m.prView.ActivityCursorHeight())
 			}
 			return m, tea.Batch(cmd, sideCmd)
 		}

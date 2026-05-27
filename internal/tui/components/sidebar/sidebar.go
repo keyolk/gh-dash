@@ -148,6 +148,37 @@ func (m *Model) SetYOffset(n int) {
 	m.viewport.SetYOffset(n)
 }
 
+// EnsureVisible scrolls the viewport the minimum amount so that the line
+// range [start, start+height) is fully visible. If the range is taller than
+// the viewport we align its top. Already-visible ranges are left untouched
+// so navigation feels stable.
+func (m *Model) EnsureVisible(start, height int) {
+	if height < 1 {
+		height = 1
+	}
+	h := m.viewport.Height()
+	if h <= 0 {
+		return
+	}
+	top := m.viewport.YOffset()
+	bottom := top + h
+	end := start + height
+
+	switch {
+	case start < top:
+		// Above the viewport — bring the start to the top.
+		m.viewport.SetYOffset(start)
+	case end > bottom:
+		// Below the viewport — scroll just enough to reveal the end, but
+		// never push the start off the top.
+		want := end - h
+		if want > start {
+			want = start
+		}
+		m.viewport.SetYOffset(want)
+	}
+}
+
 func (m *Model) ScrollToPercent(percent float64) {
 	totalLines := m.viewport.TotalLineCount()
 	targetLine := int(float64(totalLines) * percent)
