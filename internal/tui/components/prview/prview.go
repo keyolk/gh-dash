@@ -56,6 +56,12 @@ type Model struct {
 	// activityCursor is the index into activityAnchors that the user has
 	// selected via n / N navigation. -1 means "no selection".
 	activityCursor int
+
+	// View() is expensive (Glamour-renders every comment + review). Cache
+	// the last rendered string so unchanged frames (e.g. while the user
+	// scrolls a separate viewport) reuse it instead of re-rendering.
+	viewCache    string
+	viewCacheKey string
 }
 
 var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
@@ -152,6 +158,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// f : toggle minimised state on the activity under the cursor.
 		if keyMsg.String() == "f" && m.carousel.Cursor() == 1 {
 			m.toggleActivityFold()
+		}
+		// Direct tab jumps — 1..5 picks Overview, Activity, Commits, Checks,
+		// Files Changed without cycling through them.
+		switch keyMsg.String() {
+		case "1":
+			m.carousel.SetCursor(0)
+		case "2":
+			m.carousel.SetCursor(1)
+		case "3":
+			m.carousel.SetCursor(2)
+		case "4":
+			m.carousel.SetCursor(3)
+		case "5":
+			m.carousel.SetCursor(4)
 		}
 		// `U` (anywhere in the PR sidebar) retries enrichment when a
 		// previous fetch failed, so the user isn't stuck on a stale
@@ -294,6 +314,15 @@ func (m *Model) View() string {
 		return ""
 	}
 
+	// View() is hot — it's invoked from syncSidebar on essentially every
+	// keystroke. Re-rendering Glamour over every comment each time made
+	// the PR detail crawl. Cache the rendered string keyed by the inputs
+	// that actually change its output.
+	key := m.viewCacheKeyOf()
+	if key != "" && key == m.viewCacheKey && m.viewCache != "" {
+		return m.viewCache
+	}
+
 	body := strings.Builder{}
 	switch m.carousel.SelectedItem() {
 	case tabs[0]:
@@ -310,10 +339,49 @@ func (m *Model) View() string {
 		body.WriteString(m.renderChangedFiles())
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	out := lipgloss.JoinVertical(lipgloss.Left,
 		m.viewHeader(),
 		lipgloss.NewStyle().Padding(0, m.ctx.Styles.Sidebar.ContentPadding).Render(body.String()),
 	)
+	if key != "" {
+		m.viewCache = out
+		m.viewCacheKey = key
+	}
+	return out
+}
+
+// viewCacheKeyOf builds a key that varies whenever the rendered output
+// should change. Bumping any of these inputs forces a re-render.
+func (m *Model) viewCacheKeyOf() string {
+	if m.pr == nil {
+		return ""
+	}
+	updated := m.pr.Data.Primary.UpdatedAt.UnixNano()
+	folded := len(m.foldedActivities)
+	expanded := len(m.expandedThreads)
+	enrichErrStr := ""
+	if m.enrichErr != nil {
+		enrichErrStr = m.enrichErr.Error()
+	}
+	return fmt.Sprintf("%s|%d|%t|%d|%d|%d|%d|%s|%d|%t",
+		m.pr.Data.Primary.Url,
+		m.carousel.Cursor(),
+		m.pr.Data.IsEnriched,
+		updated,
+		m.activityCursor,
+		folded,
+		expanded,
+		enrichErrStr,
+		m.width,
+		m.summaryViewMore,
+	)
+}
+
+// InvalidateView forces the next View() call to re-render. Call this from
+// any mutation that isn't already captured by viewCacheKeyOf.
+func (m *Model) InvalidateView() {
+	m.viewCacheKey = ""
+	m.viewCache = ""
 }
 
 func (m *Model) viewHeader() string {
