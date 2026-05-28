@@ -253,11 +253,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the PR list; every other key is forwarded to the PR view so the
 		// user can scroll the carousel tabs, comment, etc.
 		if m.prDetailFullscreen {
+			// Search modal first — it captures every key.
+			if m.prView.ActivitySearchActive() {
+				switch msg.String() {
+				case "esc":
+					m.prView.CloseActivitySearch()
+					return m, nil
+				case "enter":
+					if m.prView.ActivitySearchAcceptCurrent() {
+						if line := m.prView.ActivityCursorLine(); line >= 0 {
+							m.syncSidebar()
+							m.sidebar.EnsureVisible(line, m.prView.ActivityCursorHeight())
+						}
+					}
+					return m, nil
+				case "up", "ctrl+p":
+					m.prView.ActivitySearchMove(-1)
+					return m, nil
+				case "down", "ctrl+n":
+					m.prView.ActivitySearchMove(1)
+					return m, nil
+				}
+				cmd = m.prView.ActivitySearchKey(msg)
+				return m, cmd
+			}
 			switch msg.String() {
 			case "esc", "q":
 				m.prDetailFullscreen = false
 				m.syncMainContentDimensions()
 				m.syncProgramContext()
+				return m, nil
+			case "/":
+				w := m.ctx.ScreenWidth
+				m.prView.OpenActivitySearch(w)
 				return m, nil
 			}
 			// Pure scroll keys: just nudge the viewport. Re-rendering the
@@ -1102,16 +1130,24 @@ func (m Model) View() tea.View {
 			Foreground(lipgloss.Color("12")).Bold(true).
 			Render("PR DETAIL")
 		hint := lipgloss.NewStyle().Faint(true).
-			Render(" 1-5 tabs · j/k scroll · n/N comment · f minimise · ctrl-d/u page · T expand · U retry · esc/q back ")
+			Render(" 1-5 tabs · j/k scroll · n/N comment · / search · f minimise · ctrl-d/u page · T expand · U retry · esc/q back ")
 		footer := lipgloss.NewStyle().
 			Width(m.ctx.ScreenWidth).
 			Render(modeBadge + "  " + hint)
 
 		full := lipgloss.JoinVertical(lipgloss.Left, titleBar, body, footer)
-		v.SetContent(lipgloss.NewStyle().
+		baseLayer := lipgloss.NewLayer(lipgloss.NewStyle().
 			Width(m.ctx.ScreenWidth).
 			Height(m.ctx.ScreenHeight).
 			Render(full))
+		layers := []*lipgloss.Layer{baseLayer}
+		if sv := m.prView.ActivitySearchView(min(100, m.ctx.ScreenWidth-6)); sv != "" {
+			bw := lipgloss.Width(sv)
+			x := max(0, (m.ctx.ScreenWidth-bw)/2)
+			layers = append(layers, lipgloss.NewLayer(sv).X(x).Y(2))
+		}
+		comp := lipgloss.NewCompositor(layers...)
+		v.SetContent(comp.Render())
 		return v
 	}
 

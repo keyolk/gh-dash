@@ -62,6 +62,9 @@ type Model struct {
 	// scrolls a separate viewport) reuse it instead of re-rendering.
 	viewCache    string
 	viewCacheKey string
+
+	// search drives the Activity-tab `/` search modal.
+	search activitySearch
 }
 
 var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
@@ -82,6 +85,7 @@ func NewModel(ctx *context.ProgramContext) Model {
 		expandedThreads:  map[string]bool{},
 		foldedActivities: map[string]bool{},
 		activityCursor:   -1,
+		search:           newActivitySearch(),
 	}
 }
 
@@ -363,7 +367,7 @@ func (m *Model) viewCacheKeyOf() string {
 	if m.enrichErr != nil {
 		enrichErrStr = m.enrichErr.Error()
 	}
-	return fmt.Sprintf("%s|%d|%t|%d|%d|%d|%d|%s|%d|%t",
+	return fmt.Sprintf("%s|%d|%t|%d|%d|%d|%d|%s|%d|%t|%t|%d",
 		m.pr.Data.Primary.Url,
 		m.carousel.Cursor(),
 		m.pr.Data.IsEnriched,
@@ -374,6 +378,8 @@ func (m *Model) viewCacheKeyOf() string {
 		enrichErrStr,
 		m.width,
 		m.summaryViewMore,
+		m.search.active,
+		len(m.search.hits),
 	)
 }
 
