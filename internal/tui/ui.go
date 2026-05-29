@@ -287,6 +287,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w := m.ctx.ScreenWidth
 				m.prView.OpenActivitySearch(w)
 				return m, nil
+			case "d":
+				// Diff view is only available from the full-screen PR detail
+				// (it was removed from the list view). Open the current PR's
+				// diff overlay.
+				if pr := m.getCurrRowData(); pr != nil {
+					repo := ""
+					if r, ok := pr.(interface{ GetRepoNameWithOwner() string }); ok {
+						repo = r.GetRepoNameWithOwner()
+					}
+					return m, func() tea.Msg {
+						return common.OpenDiffMsg{
+							PRNumber: pr.GetNumber(),
+							Repo:     repo,
+							Title:    pr.GetTitle(),
+						}
+					}
+				}
+				return m, nil
+			case "o", "enter":
+				// In the Checks tab, open the selected check's details URL
+				// in the browser.
+				if m.prView.CurrentTabIndex() == 3 && m.prView.HasChecksCursor() {
+					return m, m.openURL(m.prView.SelectedCheckURL())
+				}
 			}
 			// Pure scroll keys: just nudge the viewport. Re-rendering the
 			// entire PR view (Glamour-rendered markdown for every comment)
@@ -1130,7 +1154,7 @@ func (m Model) View() tea.View {
 			Foreground(lipgloss.Color("12")).Bold(true).
 			Render("PR DETAIL")
 		hint := lipgloss.NewStyle().Faint(true).
-			Render(" 1-5 tabs · j/k scroll · n/N comment · / search · F filter · f minimise · T expand · U retry · esc/q back ")
+			Render(" 1-5 tabs · j/k scroll · n/N comment · / search · F filter · d diff · f minimise · T expand · esc/q back ")
 		footer := lipgloss.NewStyle().
 			Width(m.ctx.ScreenWidth).
 			Render(modeBadge + "  " + hint)

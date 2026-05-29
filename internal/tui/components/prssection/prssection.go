@@ -118,9 +118,6 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 		}
 
 		switch {
-		case key.Matches(msg, keys.PRKeys.Diff):
-			cmd = m.diff()
-
 		case key.Matches(msg, keys.PRKeys.ToggleSmartFiltering):
 			before := m.IsFilteredByCurrentRemote
 

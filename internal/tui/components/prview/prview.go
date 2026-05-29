@@ -68,6 +68,18 @@ type Model struct {
 
 	// activityFilter restricts which activities the Activity tab shows.
 	activityFilter activityFilterMode
+
+	// checkRows holds the selectable checks rendered in the Checks tab,
+	// in display order, so the user can move a cursor over them and open
+	// the matching details URL.
+	checkRows   []checkRow
+	checkCursor int
+}
+
+// checkRow is one selectable check in the Checks tab.
+type checkRow struct {
+	Name string
+	URL  string
 }
 
 // activityFilterMode selects which Activity entries are displayed.
@@ -121,6 +133,7 @@ func NewModel(ctx *context.ProgramContext) Model {
 		expandedThreads:  map[string]bool{},
 		foldedActivities: map[string]bool{},
 		activityCursor:   -1,
+		checkCursor:      -1,
 		search:           newActivitySearch(),
 	}
 }
@@ -191,9 +204,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if keyMsg.String() == "T" && m.carousel.Cursor() == 1 {
 			m.toggleThreadExpansion()
 		}
-		// n / N : jump to next / previous activity in the Activity tab.
-		if m.carousel.Cursor() == 1 && (keyMsg.String() == "n" || keyMsg.String() == "N") {
-			m.moveActivityCursor(keyMsg.String() == "n")
+		// n / N : jump to next / previous activity in the Activity tab,
+		// or next / previous check in the Checks tab.
+		if keyMsg.String() == "n" || keyMsg.String() == "N" {
+			switch m.carousel.Cursor() {
+			case 1:
+				m.moveActivityCursor(keyMsg.String() == "n")
+			case 3:
+				m.MoveCheckCursor(keyMsg.String() == "n")
+			}
 		}
 		// f : toggle minimised state on the activity under the cursor.
 		if keyMsg.String() == "f" && m.carousel.Cursor() == 1 {

@@ -38,3 +38,26 @@ func (m *Model) openBrowser() tea.Cmd {
 	}
 	return tea.Batch(startCmd, openCmd)
 }
+
+// openURL opens an arbitrary URL in the browser (used for individual check
+// details URLs).
+func (m *Model) openURL(url string) tea.Cmd {
+	if url == "" {
+		return m.notifyErr("This check has no details URL")
+	}
+	taskId := fmt.Sprintf("open_browser_%d", time.Now().Unix())
+	task := context.Task{
+		Id:           taskId,
+		StartText:    "Opening check in browser",
+		FinishedText: "Opened check in browser",
+		State:        context.TaskStart,
+		Error:        nil,
+	}
+	startCmd := m.ctx.StartTask(task)
+	openCmd := func() tea.Msg {
+		b := browser.New("", os.Stdout, os.Stdin)
+		err := b.Browse(url)
+		return constants.TaskFinishedMsg{TaskId: taskId, Err: err}
+	}
+	return tea.Batch(startCmd, openCmd)
+}

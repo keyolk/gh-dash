@@ -21,6 +21,77 @@ const (
 	statusNonRequested
 )
 
+// registerCheckRow appends a selectable check to the Checks-tab cursor list
+// and, when it is the current cursor target, wraps the rendered line with a
+// highlight bar so the user can see what `enter` / `o` will open.
+func (sidebar *Model) registerCheckRow(name, url, rendered string) string {
+	idx := len(sidebar.checkRows)
+	sidebar.checkRows = append(sidebar.checkRows, checkRow{Name: name, URL: url})
+	if idx == sidebar.checkCursor {
+		return lipgloss.NewStyle().
+			BorderStyle(lipgloss.ThickBorder()).
+			BorderLeft(true).
+			BorderForeground(lipgloss.Color("12")).
+			PaddingLeft(1).
+			Render(rendered)
+	}
+	return rendered
+}
+
+// MoveCheckCursor advances the Checks-tab cursor; builds the row list first
+// if it hasn't been rendered yet.
+func (m *Model) MoveCheckCursor(forward bool) {
+	if len(m.checkRows) == 0 {
+		_ = m.renderChecks()
+	}
+	n := len(m.checkRows)
+	if n == 0 {
+		m.checkCursor = -1
+		return
+	}
+	if m.checkCursor < 0 {
+		if forward {
+			m.checkCursor = 0
+		} else {
+			m.checkCursor = n - 1
+		}
+		m.InvalidateView()
+		return
+	}
+	if forward {
+		m.checkCursor++
+		if m.checkCursor >= n {
+			m.checkCursor = n - 1
+		}
+	} else {
+		m.checkCursor--
+		if m.checkCursor < 0 {
+			m.checkCursor = 0
+		}
+	}
+	m.InvalidateView()
+}
+
+// SelectedCheckURL returns the details URL of the check under the cursor,
+// or "" when nothing is selected or the check has no URL.
+func (m *Model) SelectedCheckURL() string {
+	if m.checkCursor < 0 || m.checkCursor >= len(m.checkRows) {
+		return ""
+	}
+	return m.checkRows[m.checkCursor].URL
+}
+
+// HasChecksCursor reports whether a check is currently selected.
+func (m *Model) HasChecksCursor() bool {
+	return m.checkCursor >= 0 && m.checkCursor < len(m.checkRows)
+}
+
+// CurrentTabIndex returns the active carousel tab index (0=Overview,
+// 1=Activity, 2=Commits, 3=Checks, 4=Files Changed).
+func (m *Model) CurrentTabIndex() int {
+	return m.carousel.Cursor()
+}
+
 func (m *Model) renderChecksOverview() string {
 	w := m.getIndentedContentWidth()
 
@@ -423,7 +494,8 @@ func renderStatusContextName(statusContext data.StatusContext) string {
 func (sidebar *Model) renderChecks() string {
 	title := sidebar.ctx.Styles.Common.MainTextStyle.MarginBottom(1).
 		Underline(true).
-		Render(" All Checks")
+		Render(" All Checks") +
+		lipgloss.NewStyle().Faint(true).Render("  · n/N select · o/enter open")
 
 	commits := sidebar.pr.Data.Enriched.Commits.Nodes
 	if len(commits) == 0 {
@@ -439,6 +511,10 @@ func (sidebar *Model) renderChecks() string {
 	rest := make([]string, 0)
 	awaitingApproval := make([]string, 0)
 	pending := make([]string, 0)
+
+	// Reset the selectable rows; rebuilt on every render so cursor / open
+	// always reflect what's on screen.
+	sidebar.checkRows = sidebar.checkRows[:0]
 
 	lastCommit := commits[0]
 
@@ -480,12 +556,14 @@ func (sidebar *Model) renderChecks() string {
 		var category CheckCategory
 		var check string
 		var checkName string
+		var checkURL string
 		switch node.Typename {
 		case "CheckRun":
 			checkRun := node.CheckRun
 			var renderedStatus string
 			category, renderedStatus = sidebar.renderCheckRunConclusion(checkRun)
 			checkName = string(checkRun.Name)
+			checkURL = string(checkRun.DetailsURL)
 			name := renderCheckRunName(checkRun)
 			check = lipgloss.JoinHorizontal(lipgloss.Top, renderedStatus, " ", name)
 		case "StatusContext":
@@ -493,6 +571,7 @@ func (sidebar *Model) renderChecks() string {
 			var status string
 			category, status = sidebar.renderStatusContextConclusion(statusContext)
 			checkName = string(statusContext.Context)
+			checkURL = string(statusContext.TargetURL)
 			check = lipgloss.JoinHorizontal(
 				lipgloss.Top,
 				status,
@@ -502,6 +581,7 @@ func (sidebar *Model) renderChecks() string {
 		}
 
 		reportedChecks[checkName] = true
+		check = sidebar.registerCheckRow(checkName, checkURL, check)
 
 		switch category {
 		case CheckWaiting:
