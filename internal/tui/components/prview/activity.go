@@ -18,6 +18,8 @@ import (
 type RenderedActivity struct {
 	Id             string // stable identifier for fold / cursor tracking
 	Kind           string // "comment" | "review" | "thread-banner" | "resolved-summary"
+	Author         string // login of the author (for "mine" filtering)
+	Resolved       bool   // resolved-thread summary
 	UpdatedAt      time.Time
 	RenderedString string
 }
@@ -99,6 +101,8 @@ func (m *Model) renderActivity() string {
 			activities = append(activities, RenderedActivity{
 				Id:             "thread-" + thread.Id,
 				Kind:           "resolved-summary",
+				Author:         latest.Author.Login,
+				Resolved:       true,
 				UpdatedAt:      latest.UpdatedAt,
 				RenderedString: summary,
 			})
@@ -163,6 +167,7 @@ func (m *Model) renderActivity() string {
 		activities = append(activities, RenderedActivity{
 			Id:             c.Id,
 			Kind:           "comment",
+			Author:         c.Author,
 			UpdatedAt:      c.UpdatedAt,
 			RenderedString: renderedComment,
 		})
@@ -176,6 +181,7 @@ func (m *Model) renderActivity() string {
 		activities = append(activities, RenderedActivity{
 			Id:             fmt.Sprintf("review-%d", ri),
 			Kind:           "review",
+			Author:         review.Author.Login,
 			UpdatedAt:      review.UpdatedAt,
 			RenderedString: renderedReview,
 		})
@@ -184,6 +190,10 @@ func (m *Model) renderActivity() string {
 	sort.Slice(activities, func(i, j int) bool {
 		return activities[i].UpdatedAt.Before(activities[j].UpdatedAt)
 	})
+
+	// Apply the active filter (cycled with `F`).
+	totalBeforeFilter := len(activities)
+	activities = m.filterActivities(activities)
 
 	// Apply user-side folds (press `f` over a comment to collapse it) by
 	// swapping the rendered body for a one-liner.
@@ -203,7 +213,13 @@ func (m *Model) renderActivity() string {
 
 	body := ""
 	if len(activities) == 0 {
-		body = renderEmptyState()
+		if m.activityFilter != filterAll && totalBeforeFilter > 0 {
+			body = lipgloss.NewStyle().Italic(true).Foreground(m.ctx.Theme.FaintText).
+				Render(fmt.Sprintf("No activity matches filter '%s' — press F to cycle filters.",
+					m.activityFilter.label()))
+		} else {
+			body = renderEmptyState()
+		}
 	} else {
 		var renderedActivities []string
 		// Count folded (resolved) threads so we can hint at `T` to expand them.
@@ -220,6 +236,11 @@ func (m *Model) renderActivity() string {
 			}
 		}
 		titleText := fmt.Sprintf("%s  %d comments", constants.CommentsIcon, len(activities))
+		if m.activityFilter != filterAll {
+			titleText += "  " + lipgloss.NewStyle().
+				Foreground(lipgloss.Color("13")).Bold(true).
+				Render(fmt.Sprintf("⛛ %s (%d/%d)", m.activityFilter.label(), len(activities), totalBeforeFilter))
+		}
 		if folded > 0 {
 			titleText += "  " + lipgloss.NewStyle().Faint(true).
 				Render(fmt.Sprintf("· %d resolved folded (T)", folded))
@@ -229,7 +250,7 @@ func (m *Model) renderActivity() string {
 				Render(fmt.Sprintf("· %d minimised (f)", userFolded))
 		}
 		titleText += "  " + lipgloss.NewStyle().Faint(true).
-			Render("· n/N next/prev")
+			Render("· n/N next/prev · F filter")
 		title := m.ctx.Styles.Common.MainTextStyle.MarginBottom(1).Underline(true).Render(titleText)
 		renderedActivities = append(renderedActivities, title)
 
@@ -268,6 +289,51 @@ func (m *Model) renderActivity() string {
 
 func renderEmptyState() string {
 	return lipgloss.NewStyle().Italic(true).Render("No comments...")
+}
+
+// filterActivities keeps only the activities matching the active filter
+// mode. The "all" mode is a no-op fast path.
+func (m *Model) filterActivities(in []RenderedActivity) []RenderedActivity {
+	if m.activityFilter == filterAll {
+		return in
+	}
+	me := strings.ToLower(m.ctx.User)
+	out := in[:0:0]
+	for _, a := range in {
+		keep := false
+		switch m.activityFilter {
+		case filterComments:
+			keep = a.Kind == "comment"
+		case filterReviews:
+			keep = a.Kind == "review"
+		case filterUnresolved:
+			keep = a.Kind != "resolved-summary"
+		case filterMine:
+			keep = me != "" && strings.ToLower(a.Author) == me &&
+				(a.Kind == "comment" || a.Kind == "review")
+		}
+		if keep {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// CycleActivityFilter advances the Activity filter to the next mode and
+// resets the cursor so it lands on a still-visible item.
+func (m *Model) CycleActivityFilter() {
+	m.activityFilter = m.activityFilter.next()
+	m.activityCursor = -1
+	m.InvalidateView()
+}
+
+// ResetActivityFilter clears the filter back to "all".
+func (m *Model) ResetActivityFilter() {
+	if m.activityFilter != filterAll {
+		m.activityFilter = filterAll
+		m.activityCursor = -1
+		m.InvalidateView()
+	}
 }
 
 // renderFoldedActivity collapses a comment / review into a single line the

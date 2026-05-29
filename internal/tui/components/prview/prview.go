@@ -65,6 +65,42 @@ type Model struct {
 
 	// search drives the Activity-tab `/` search modal.
 	search activitySearch
+
+	// activityFilter restricts which activities the Activity tab shows.
+	activityFilter activityFilterMode
+}
+
+// activityFilterMode selects which Activity entries are displayed.
+type activityFilterMode int
+
+const (
+	filterAll        activityFilterMode = iota // everything
+	filterComments                             // comments only (no reviews/banners)
+	filterReviews                              // reviews only
+	filterUnresolved                           // hide resolved-thread summaries
+	filterMine                                 // only the current user's comments/reviews
+)
+
+func (f activityFilterMode) label() string {
+	switch f {
+	case filterComments:
+		return "comments"
+	case filterReviews:
+		return "reviews"
+	case filterUnresolved:
+		return "unresolved"
+	case filterMine:
+		return "mine"
+	default:
+		return "all"
+	}
+}
+
+func (f activityFilterMode) next() activityFilterMode {
+	if f >= filterMine {
+		return filterAll
+	}
+	return f + 1
 }
 
 var tabs = []string{" Overview", " Activity", " Commits", " Checks", " Files Changed"}
@@ -162,6 +198,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// f : toggle minimised state on the activity under the cursor.
 		if keyMsg.String() == "f" && m.carousel.Cursor() == 1 {
 			m.toggleActivityFold()
+		}
+		// F : cycle the Activity filter (all → comments → reviews →
+		// unresolved → mine → all). No separate reset key — cycling wraps
+		// back to "all".
+		if keyMsg.String() == "F" && m.carousel.Cursor() == 1 {
+			m.CycleActivityFilter()
 		}
 		// Direct tab jumps — 1..5 picks Overview, Activity, Commits, Checks,
 		// Files Changed without cycling through them.

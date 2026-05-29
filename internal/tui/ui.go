@@ -1130,7 +1130,7 @@ func (m Model) View() tea.View {
 			Foreground(lipgloss.Color("12")).Bold(true).
 			Render("PR DETAIL")
 		hint := lipgloss.NewStyle().Faint(true).
-			Render(" 1-5 tabs · j/k scroll · n/N comment · / search · f minimise · ctrl-d/u page · T expand · U retry · esc/q back ")
+			Render(" 1-5 tabs · j/k scroll · n/N comment · / search · F filter · f minimise · T expand · U retry · esc/q back ")
 		footer := lipgloss.NewStyle().
 			Width(m.ctx.ScreenWidth).
 			Render(modeBadge + "  " + hint)
